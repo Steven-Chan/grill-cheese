@@ -5,7 +5,6 @@ import {
   Panel,
   ReactFlow,
   ReactFlowProvider,
-  useNodesInitialized,
   useReactFlow,
   type Edge,
   type Node,
@@ -33,9 +32,6 @@ function CanvasInner() {
   const userPanned = useStore((s) => s.userPanned);
   const setUserPanned = useStore((s) => s.setUserPanned);
   const rf = useReactFlow();
-  // gate auto-focus on actual DOM measurement — layout reserves NODE_H
-  // but rendered card is often taller; we need measured.height to find true center.
-  const nodesInitialized = useNodesInitialized();
   // ref guards against re-firing setCenter on `node_updated` SSE events
   // (which mutate `nodes` → `rfNodes` recomputes → effect re-runs while
   // pendingNodeId is unchanged). Focus must fire once per new pending node.
@@ -83,24 +79,36 @@ function CanvasInner() {
   }, [nodes, pendingNodeId]);
 
   // auto-focus: pan to new pending node, keep current zoom.
-  // fires once per new pendingNodeId — ref blocks re-runs from rfNodes changes
-  // when same pending node is updated (branch tagging, hook traces, etc.).
-  // waits for nodesInitialized so we can use measured.height (cards exceed NODE_H).
+  // fires once per new pendingNodeId. measured dims live on xyflow's internal
+  // node (nodeLookup) — rf.getNode() reads the raw prop array which never gets
+  // measured. rf.getInternalNode() reads nodeLookup. rAF-poll until ready.
   useEffect(() => {
     if (!pendingNodeId) return;
     if (pendingNodeId === lastFocusedId.current) return;
-    if (!nodesInitialized) return;
-    const node = rf.getNode(pendingNodeId);
-    if (!node) return;
-    const w = node.measured?.width ?? NODE_W;
-    const h = node.measured?.height ?? NODE_H;
-    lastFocusedId.current = pendingNodeId;
-    armProgrammaticMove();
-    rf.setCenter(node.position.x + w / 2, node.position.y + h / 2, {
-      duration: FOCUS_DURATION_MS,
-      zoom: rf.getZoom(),
-    });
-  }, [pendingNodeId, nodesInitialized, rf]);
+    let cancelled = false;
+    let raf = 0;
+    const tryFocus = () => {
+      if (cancelled) return;
+      const node = rf.getInternalNode(pendingNodeId);
+      const w = node?.measured?.width;
+      const h = node?.measured?.height;
+      if (!node || !w || !h) {
+        raf = requestAnimationFrame(tryFocus);
+        return;
+      }
+      lastFocusedId.current = pendingNodeId;
+      armProgrammaticMove();
+      rf.setCenter(node.position.x + w / 2, node.position.y + h / 2, {
+        duration: FOCUS_DURATION_MS,
+        zoom: rf.getZoom(),
+      });
+    };
+    tryFocus();
+    return () => {
+      cancelled = true;
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [pendingNodeId, rf]);
 
   // clear pending timer on unmount — stale timers across remounts would
   // reset programmaticMove at the wrong time and swallow a real user pan.
@@ -128,7 +136,7 @@ function CanvasInner() {
 
   const jumpToPending = () => {
     if (!pendingNodeId) return;
-    const node = rf.getNode(pendingNodeId);
+    const node = rf.getInternalNode(pendingNodeId);
     if (!node) return;
     const w = node.measured?.width ?? NODE_W;
     const h = node.measured?.height ?? NODE_H;
