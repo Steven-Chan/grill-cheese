@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grill-cheese-server"
+version = "0.1.0"
+description = "MCP + hooks server for grill-cheese: visual exhaustive grill-me for Claude Code"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.2.0",
+  "starlette>=0.37",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.6",
+  "anyio>=4.3",
+  "sse-starlette>=2.1",
+]
+
+[tool.setuptools]
+packages = ["server"]

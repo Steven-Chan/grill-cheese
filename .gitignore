@@ -1,0 +1,26 @@
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+# node
+node_modules/
+gui/dist/
+.vite/
+
+# OS
+.DS_Store
+
+# claude
+.claude/local
+sessions/
+*.session.json
+
+# logs
+*.log
