@@ -31,7 +31,9 @@ from typing import Any
 
 from mcp.server.lowlevel import Server, NotificationOptions
 from mcp.server.stdio import stdio_server
+from mcp.shared.message import SessionMessage
 import mcp.types as t
+from mcp.types import JSONRPCMessage, JSONRPCNotification
 
 
 server = Server("channels-spike")
@@ -46,18 +48,20 @@ def _log(msg: str) -> None:
 async def _delayed_notify(session, delay: float, tick: int) -> None:
     await asyncio.sleep(delay)
     try:
-        notif_obj = t.Notification[dict, str](
+        # Custom method -> bypass ServerNotification (closed union, rejects
+        # notifications/claude/channel). See server/shim.py:_emit_channel.
+        jr = JSONRPCNotification(
+            jsonrpc="2.0",
             method="notifications/claude/channel",
             params={
                 "content": f"spike tick {tick} at {time.time():.1f}",
                 "meta": {"tick": str(tick), "source": "channels-spike"},
             },
         )
-        wrapped = t.ServerNotification(notif_obj)  # type: ignore[arg-type]
-        await session.send_notification(wrapped)
+        await session.send_message(SessionMessage(message=JSONRPCMessage(jr)))
         _log(f"emitted notification tick={tick}")
     except Exception as e:
-        _log(f"notify err: {e!r}")
+        _log(f"notify err: {type(e).__name__}: {e}")
 
 
 @server.list_tools()

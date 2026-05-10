@@ -35,7 +35,9 @@ from httpx_sse import aconnect_sse
 from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.session import ServerSession
 from mcp.server.stdio import stdio_server
+from mcp.shared.message import SessionMessage
 import mcp.types as t
+from mcp.types import JSONRPCMessage, JSONRPCNotification
 
 # Tool metadata is reused from the HTTP server's FastMCP instance to keep
 # the shim auto-aligned with the canonical tool list.
@@ -129,7 +131,18 @@ _pending_emits: list[dict[str, Any]] = []
 
 
 async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> None:
-    """Map an SSE node_committed envelope to a notifications/claude/channel."""
+    """Map an SSE node_committed envelope to a notifications/claude/channel.
+
+    Sends a raw JSON-RPC notification straight to the session write stream
+    instead of going through session.send_notification(ServerNotification(...)).
+    ServerNotification is a RootModel over a closed union of standard MCP
+    notif types (Cancelled / Progress / LoggingMessage / ResourceUpdated /
+    ResourceListChanged / ToolListChanged / PromptListChanged /
+    ElicitComplete / TaskStatus). A custom method like
+    notifications/claude/channel is NOT in that union -> pydantic
+    ValidationError -> silent emit failure (see git blame of this file
+    for the prior broken path).
+    """
     payload = event_data.get("payload") or {}
     session_id = event_data.get("session_id") or ""
     node_id = payload.get("node_id") or ""
@@ -147,16 +160,19 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
         "node_id": str(node_id),
         "seq": str(seq) if seq is not None else "",
     }
-    notif_obj = t.Notification[dict, str](
-        method="notifications/claude/channel",
-        params={"content": json.dumps(body), "meta": meta},
-    )
-    wrapped = t.ServerNotification(notif_obj)  # type: ignore[arg-type]
     try:
-        await session.send_notification(wrapped)
+        jr = JSONRPCNotification(
+            jsonrpc="2.0",
+            method="notifications/claude/channel",
+            params={"content": json.dumps(body), "meta": meta},
+        )
+        # send_message is the public low-level primitive on ServerSession;
+        # equivalent to self._write_stream.send(...) but stable across
+        # future internal refactors of the attribute name.
+        await session.send_message(SessionMessage(message=JSONRPCMessage(jr)))
         _log(f"emitted channel notif session={session_id} node={node_id} seq={seq}")
     except Exception as e:
-        _log(f"channel emit err: {e!r}")
+        _log(f"channel emit err: {type(e).__name__}: {e}")
         return
     # Telemetry round-trip — best-effort. Failure must not block emit path.
     if isinstance(seq, int) and session_id and node_id:
@@ -194,7 +210,7 @@ async def _sse_subscriber() -> None:
                             continue
                         await _emit_channel(sess, data)
         except Exception as e:
-            _log(f"SSE loop err: {e!r}; reconnect in {backoff:.1f}s")
+            _log(f"SSE loop err: {type(e).__name__}: {e}; reconnect in {backoff:.1f}s")
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 30.0)
 
