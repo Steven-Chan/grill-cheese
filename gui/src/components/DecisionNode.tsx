@@ -22,6 +22,10 @@ export function DecisionNode({ data }: NodeProps) {
   // (clean-slate-on-resume). Initialised from ★ branches once per node id.
   const [pendingChecks, setPendingChecks] = useState<Set<string>>(new Set());
   const [pendingNote, setPendingNote] = useState("");
+  // single-mode only: "Other (free text)" is a mutually-exclusive radio option.
+  // when true, pendingChecks is empty + submit sends note only.
+  const [otherSelected, setOtherSelected] = useState(false);
+  const otherInputRef = useRef<HTMLTextAreaElement | null>(null);
   const initialisedFor = useRef<string | null>(null);
   const multi = !!node.multi_select;
 
@@ -35,6 +39,7 @@ export function DecisionNode({ data }: NodeProps) {
     if (multi) setPendingChecks(new Set(recs));
     else setPendingChecks(recs.length > 0 ? new Set([recs[0]]) : new Set());
     setPendingNote("");
+    setOtherSelected(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.id]);
 
@@ -48,6 +53,8 @@ export function DecisionNode({ data }: NodeProps) {
   const interactive = isPending && !committed && !redirected;
 
   const toggleCheck = (bid: string) => {
+    // single-mode: picking a real branch clears "Other" radio
+    if (!multi) setOtherSelected(false);
     setPendingChecks((prev) => {
       const next = new Set(prev);
       if (next.has(bid)) next.delete(bid);
@@ -59,9 +66,41 @@ export function DecisionNode({ data }: NodeProps) {
     });
   };
 
+  // single-mode only: select the "Other (free text)" radio
+  const selectOther = () => {
+    if (multi) return;
+    setOtherSelected(true);
+    setPendingChecks(new Set());
+    // defer focus to next tick so textarea is mounted/enabled
+    setTimeout(() => otherInputRef.current?.focus(), 0);
+  };
+
   const submit = async () => {
     if (!sid) return;
     const note = pendingNote.trim();
+    if (!multi) {
+      // single-mode: mutually exclusive — Other radio sends note only,
+      // real branch sends branch_ids only
+      if (otherSelected) {
+        if (!note) return;
+        try {
+          await postAction(sid, node.id, "next", { note });
+        } catch (e) {
+          console.error(e);
+        }
+        return;
+      }
+      if (pendingChecks.size === 0) return;
+      try {
+        await postAction(sid, node.id, "next", {
+          branch_ids: Array.from(pendingChecks),
+        });
+      } catch (e) {
+        console.error(e);
+      }
+      return;
+    }
+    // multi-mode: picks + optional note coexist
     if (pendingChecks.size === 0 && !note) return;
     try {
       await postAction(sid, node.id, "next", {
@@ -88,6 +127,7 @@ export function DecisionNode({ data }: NodeProps) {
     if (!sid) return;
     setPendingChecks(new Set());
     setPendingNote("");
+    setOtherSelected(false);
     try {
       await postAction(sid, node.id, "chat", { branch_id: bid });
     } catch (e) {
@@ -107,7 +147,11 @@ export function DecisionNode({ data }: NodeProps) {
     .filter(Boolean)
     .join(" ");
 
-  const submitGated = pendingChecks.size === 0 && pendingNote.trim() === "";
+  const submitGated = multi
+    ? pendingChecks.size === 0 && pendingNote.trim() === ""
+    : otherSelected
+      ? pendingNote.trim() === ""
+      : pendingChecks.size === 0;
 
   return (
     <div className={wrapperClasses}>
@@ -179,17 +223,44 @@ export function DecisionNode({ data }: NodeProps) {
             onChat={() => sendChat(b.id)}
           />
         ))}
-        {interactive && (
-          <div className="gc-other-box">
+        {interactive && !multi && (
+          <div
+            className={`gc-branch other ${otherSelected ? "state-checked" : ""}`}
+            onClick={(e) => {
+              // ignore clicks bubbling from the textarea
+              if ((e.target as HTMLElement).tagName === "TEXTAREA") return;
+              selectOther();
+            }}
+            role="button"
+            style={{ cursor: "pointer" }}
+          >
+            <div className="gc-branch-row">
+              <span className="gc-branch-glyph" title="type your own answer">
+                {otherSelected ? "◉" : "○"}
+              </span>
+              <span className="gc-branch-label">Other (type your own)</span>
+            </div>
             <textarea
-              className="gc-other-input"
+              ref={otherInputRef}
+              className="gc-other-input nodrag"
               value={pendingNote}
               onChange={(e) => setPendingNote(e.target.value)}
-              placeholder={
-                multi
-                  ? "Optional — add a typed answer alongside your checks"
-                  : "Or type your own answer (becomes a new option)"
-              }
+              onFocus={() => {
+                if (!otherSelected) selectOther();
+              }}
+              placeholder="Type your answer here"
+              rows={2}
+              style={{ marginTop: 6 }}
+            />
+          </div>
+        )}
+        {interactive && multi && (
+          <div className="gc-other-box">
+            <textarea
+              className="gc-other-input nodrag"
+              value={pendingNote}
+              onChange={(e) => setPendingNote(e.target.value)}
+              placeholder="Optional — add a typed answer alongside your checks"
               rows={2}
             />
           </div>
