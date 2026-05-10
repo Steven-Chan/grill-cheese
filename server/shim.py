@@ -28,6 +28,7 @@ import asyncio
 import json
 import os
 import sys
+import uuid
 from typing import Any
 
 import httpx
@@ -48,6 +49,14 @@ HOST = os.environ.get("GRILL_CHEESE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("GRILL_CHEESE_PORT", "7878"))
 BASE_URL = f"http://{HOST}:{PORT}"
 
+# Per-shim uuid. Stamped on every session this shim creates (via the
+# X-Grill-Owner HTTP header read by internal_dispatch) and used as the
+# SSE subscribe filter — keeps parallel CC instances from receiving each
+# other's node_committed events. Regenerated on every shim start; old
+# sessions become orphaned/unreachable, which is the intended behavior
+# (one CC lifecycle = one owner).
+OWNER_ID = uuid.uuid4().hex
+
 # wait_for_action is intentionally NOT exposed: Channels replace it.
 EXCLUDED_TOOLS = {"wait_for_action"}
 
@@ -66,7 +75,11 @@ _client: httpx.AsyncClient | None = None
 async def _http() -> httpx.AsyncClient:
     global _client
     if _client is None:
-        _client = httpx.AsyncClient(base_url=BASE_URL, timeout=httpx.Timeout(120.0))
+        _client = httpx.AsyncClient(
+            base_url=BASE_URL,
+            timeout=httpx.Timeout(120.0),
+            headers={"X-Grill-Owner": OWNER_ID},
+        )
     return _client
 
 
@@ -187,12 +200,18 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
 
 
 async def _sse_subscriber() -> None:
-    """Long-lived task that subscribes to /events and bridges committed events."""
+    """Long-lived task that subscribes to /events and bridges committed events.
+
+    Subscribes with ?owner=<OWNER_ID> so this shim only receives events for
+    sessions it created. Without this, every parallel CC instance would
+    receive every other instance's channel notifications (global SSE bucket).
+    """
     backoff = 1.0
+    sse_path = f"/events?owner={OWNER_ID}"
     while True:
         try:
             async with httpx.AsyncClient(base_url=BASE_URL, timeout=None) as c:
-                async with aconnect_sse(c, "GET", "/events") as event_source:
+                async with aconnect_sse(c, "GET", sse_path) as event_source:
                     _log("SSE connected")
                     backoff = 1.0
                     async for sse in event_source.aiter_sse():
@@ -223,6 +242,7 @@ async def main() -> None:
         experimental_capabilities={"claude/channel": {}},
     )
 
+    _log(f"shim owner_id={OWNER_ID}")
     # Pre-flight: HTTP server reachable?
     try:
         async with httpx.AsyncClient(base_url=BASE_URL, timeout=5.0) as c:

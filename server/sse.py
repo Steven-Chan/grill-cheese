@@ -12,11 +12,16 @@ from sse_starlette.sse import EventSourceResponse
 from .state import store
 
 
-async def _stream(request: Request, sid: Optional[str]) -> AsyncIterator[dict]:
-    q = await store.subscribe(sid)
+async def _stream(
+    request: Request,
+    sid: Optional[str],
+    owner: Optional[str],
+) -> AsyncIterator[dict]:
+    q = await store.subscribe(sid=sid, owner=owner)
     try:
         # initial hello so client knows it's alive
-        yield {"event": "hello", "data": json.dumps({"sid": sid or "*"})}
+        hello_tag = owner or sid or "*"
+        yield {"event": "hello", "data": json.dumps({"sid": hello_tag})}
         while True:
             if await request.is_disconnected():
                 break
@@ -28,9 +33,10 @@ async def _stream(request: Request, sid: Optional[str]) -> AsyncIterator[dict]:
                 continue
             yield {"event": ev.get("type", "message"), "data": json.dumps(ev)}
     finally:
-        await store.unsubscribe(sid, q)
+        await store.unsubscribe(sid, q, owner=owner)
 
 
 async def events_endpoint(request: Request) -> Response:
     sid = request.query_params.get("session")
-    return EventSourceResponse(_stream(request, sid))
+    owner = request.query_params.get("owner")
+    return EventSourceResponse(_stream(request, sid, owner))

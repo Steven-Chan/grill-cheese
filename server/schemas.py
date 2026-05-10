@@ -83,6 +83,10 @@ class Session(BaseModel):
     title: Optional[str] = None
     brief: str
     project: str = ""
+    # uuid of the shim that owns this session. SSE/channel events for this
+    # session are only delivered to subscribers matching this owner — keeps
+    # parallel CC instances from cross-talking.
+    owner_id: Optional[str] = None
     schema_version: int = 1
     started_at: float
     status: SessionStatus = "active"

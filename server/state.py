@@ -49,6 +49,10 @@ class Store:
         self._subs: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         # global subscribers (all sessions, for index page)
         self._global_subs: list[asyncio.Queue[dict[str, Any]]] = []
+        # owner-scoped subscribers: owner_id -> list[asyncio.Queue]. Only
+        # receive events for sessions whose owner_id matches. Used by the
+        # stdio shim so parallel CC instances don't cross-talk.
+        self._owner_subs: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._lock = asyncio.Lock()
         # disk root for session JSON snapshots
         self._data_root: pathlib.Path = pathlib.Path.home() / ".grill-cheese"
@@ -105,14 +109,40 @@ class Store:
         return None
 
     # ---- sessions ----
-    def new_session(self, title: str, brief: str, project: str) -> Session:
+    def new_session(
+        self, title: str, brief: str, project: str, owner_id: Optional[str] = None
+    ) -> Session:
         sid = uuid.uuid4().hex[:12]
         s = Session(
-            id=sid, title=title, brief=brief, project=project, started_at=time.time()
+            id=sid, title=title, brief=brief, project=project,
+            started_at=time.time(), owner_id=owner_id,
         )
         self.sessions[sid] = s
         self._persist(s)
         return s
+
+    async def set_session_owner(self, sid: str, owner_id: str) -> bool:
+        """Stamp owner_id post-hoc. Used by internal_dispatch on start_session
+        when an X-Grill-Owner header is present. No-op if session is missing
+        or already has a different owner (treat as race / replay).
+
+        Async + lock-protected because broadcast() reads owner_id under
+        self._lock to route events; setter must serialize with that read,
+        otherwise the first node_committed after start_session can race
+        the stamp and miss the owner bucket."""
+        if not owner_id:
+            return False
+        async with self._lock:
+            s = self.sessions.get(sid)
+            if s is None:
+                return False
+            if s.owner_id and s.owner_id != owner_id:
+                return False
+            if s.owner_id == owner_id:
+                return True
+            s.owner_id = owner_id
+        self._persist(s)
+        return True
 
     def get(self, sid: str) -> Optional[Session]:
         return self.sessions.get(sid)
@@ -735,26 +765,48 @@ class Store:
 
     # ---- SSE pub/sub ----
     async def subscribe(
-        self, sid: Optional[str]
+        self,
+        sid: Optional[str] = None,
+        owner: Optional[str] = None,
     ) -> asyncio.Queue[dict[str, Any]]:
+        """Subscribe to SSE events.
+
+        Bucket selection (mutually exclusive, precedence top-down):
+          - owner: receive events for every session whose owner_id == owner.
+                   Used by the stdio shim (one bucket per shim uuid).
+          - sid:   receive events for one specific session. Used by the
+                   GUI session-detail view.
+          - neither: global — every event. Used by the GUI index page.
+        """
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
         async with self._lock:
-            if sid:
+            if owner:
+                self._owner_subs[owner].append(q)
+                # replay ring for every session this owner owns so a
+                # restarting shim catches flushed-but-not-delivered events
+                for s_id, s in self.sessions.items():
+                    if s.owner_id == owner:
+                        for ev in list(self.ring[s_id]):
+                            await q.put(ev)
+            elif sid:
                 self._subs[sid].append(q)
-                # replay ring
                 for ev in list(self.ring[sid]):
                     await q.put(ev)
             else:
                 self._global_subs.append(q)
-            # send fresh session list snapshot to every new subscriber
             await q.put(self._session_list_snapshot())
         return q
 
     async def unsubscribe(
-        self, sid: Optional[str], q: asyncio.Queue[dict[str, Any]]
+        self,
+        sid: Optional[str],
+        q: asyncio.Queue[dict[str, Any]],
+        owner: Optional[str] = None,
     ) -> None:
         async with self._lock:
-            if sid and q in self._subs.get(sid, []):
+            if owner and q in self._owner_subs.get(owner, []):
+                self._owner_subs[owner].remove(q)
+            elif sid and q in self._subs.get(sid, []):
                 self._subs[sid].remove(q)
             elif q in self._global_subs:
                 self._global_subs.remove(q)
@@ -762,7 +814,13 @@ class Store:
     async def broadcast(self, sid: str, ev: dict[str, Any]) -> None:
         self.ring[sid].append(ev)
         async with self._lock:
+            # owner_id read under lock — serialises with set_session_owner so
+            # the first flush after start_session can't race the stamp.
+            s = self.sessions.get(sid)
+            owner = s.owner_id if s else None
             targets = list(self._subs.get(sid, [])) + list(self._global_subs)
+            if owner:
+                targets += list(self._owner_subs.get(owner, []))
         for q in targets:
             try:
                 q.put_nowait(ev)

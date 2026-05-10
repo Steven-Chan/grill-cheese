@@ -14,7 +14,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from . import mcp_app
+from .state import store
 from .telemetry import log_next_call, log_notify
+
+OWNER_HEADER = "X-Grill-Owner"
 
 
 # Whitelisted tool names — must match @mcp.tool() registrations in mcp_app.py
@@ -50,6 +53,14 @@ async def internal_tool_endpoint(request: Request) -> Response:
         return JSONResponse({"error": f"bad args: {e}"}, status_code=400)
     except Exception as e:
         return JSONResponse({"error": f"{type(e).__name__}: {e}"}, status_code=500)
+    # Stamp owner on freshly-started sessions so SSE owner-filter routes
+    # node_committed events back only to the shim that created them. Done
+    # post-call to avoid plumbing owner_id through the tool signature.
+    if name == "start_session" and isinstance(result, dict):
+        owner = request.headers.get(OWNER_HEADER)
+        new_sid = result.get("session_id")
+        if owner and isinstance(new_sid, str) and new_sid:
+            await store.set_session_owner(new_sid, owner)
     return JSONResponse(result if result is not None else {})
 
 
