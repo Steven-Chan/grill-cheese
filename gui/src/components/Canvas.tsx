@@ -240,7 +240,7 @@ function CanvasInner() {
     >
       <Background gap={32} size={1} color="var(--gc-grid)" />
       <Controls />
-      <Panel position="top-right">
+      <Panel position="bottom-right">
         <div className="gc-fab-stack">
           <button
             className={`gc-pan-btn${panEnabled ? " active" : ""}`}

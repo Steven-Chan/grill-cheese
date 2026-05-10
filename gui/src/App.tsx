@@ -40,10 +40,10 @@ export default function App() {
   return (
     <div className="gc-app">
       <Toolbar />
-      <BriefBanner />
       <PausedNotice />
       <main className="gc-canvas-wrap">
         {sid ? <Canvas /> : <EmptyState />}
+        <BriefBanner />
       </main>
       {toast && (
         <div className="gc-toast" role="status">

@@ -276,10 +276,19 @@ body,
   font-size: 12px;
 }
 
-/* brief banner — title in toolbar, brief here below; collapsible */
+/* brief banner — overlay above canvas; doesn't push layout */
 .gc-brief-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  background: rgba(42, 35, 28, 0.92);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--gc-edge);
-  background: var(--gc-bg-card);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  pointer-events: auto;
 }
 .gc-brief-strip {
   width: 100%;
