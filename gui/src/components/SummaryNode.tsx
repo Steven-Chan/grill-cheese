@@ -82,7 +82,7 @@ export function SummaryNode({ data }: NodeProps) {
         {isPending && !committed && <span className="gc-node-tag pulse">awaiting verdict</span>}
         {committed && <span className="gc-node-tag">settled</span>}
       </div>
-      <div className="gc-summary-body">
+      <div className="gc-summary-body nowheel">
         {node.summary_body ? (
           <ReactMarkdown>{node.summary_body}</ReactMarkdown>
         ) : (

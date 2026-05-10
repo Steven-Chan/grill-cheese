@@ -11,6 +11,9 @@ interface State {
   endedSummary: string | null;
   paused: PausedState | null; // chat-handoff: session paused, user in CC
   userPanned: boolean; // user manually moved viewport since last new node
+  panEnabled: boolean; // session-only: drag-to-pan toggle (default off)
+  toast: string | null;
+  toastClearAt: number; // wall ms when toast should clear
 
   setActive(sid: string): void;
   setBrief(b: string): void;
@@ -25,6 +28,8 @@ interface State {
   setPaused(p: PausedState): void;
   setResumed(): void;
   setUserPanned(v: boolean): void;
+  setPanEnabled(v: boolean): void;
+  setToast(msg: string | null): void;
 }
 
 export const useStore = create<State>((set) => ({
@@ -37,6 +42,9 @@ export const useStore = create<State>((set) => ({
   endedSummary: null,
   paused: null,
   userPanned: false,
+  panEnabled: false,
+  toast: null,
+  toastClearAt: 0,
 
   setActive: (sid) =>
     set(() => ({
@@ -47,6 +55,7 @@ export const useStore = create<State>((set) => ({
       endedSummary: null,
       paused: null,
       userPanned: false,
+      panEnabled: false,
     })),
   setBrief: (b) => set(() => ({ brief: b })),
   addNode: (n) =>
@@ -56,9 +65,17 @@ export const useStore = create<State>((set) => ({
       userPanned: false, // new node arrived → fresh chance to auto-focus
     })),
   updateNode: (n) =>
-    set((s) => ({
-      nodes: { ...s.nodes, [n.id]: n },
-    })),
+    set((s) => {
+      const next = { ...s.nodes, [n.id]: n };
+      // if this node is now redirected via chat, the next pending question
+      // will arrive as a fresh node; meanwhile keep pendingNodeId pointing
+      // at it until that arrives so the canvas doesn't lose focus.
+      // if chat applied unlocked the node (refine/resolve), the server
+      // dropped the committed batch — we keep committed=true on the GUI
+      // record briefly, but the node payload from apply_chat_result resets
+      // it via the new payload (which has no committed flag).
+      return { nodes: next };
+    }),
   setNodeResolved: (node_id) =>
     set((s) => ({
       pendingNodeId: s.pendingNodeId === node_id ? null : s.pendingNodeId,
@@ -92,6 +109,9 @@ export const useStore = create<State>((set) => ({
       endedSummary: null,
       paused: null,
       userPanned: false,
+      panEnabled: false,
+      toast: null,
+      toastClearAt: 0,
     })),
   setEnded: (summary) => set(() => ({ endedSummary: summary, pendingNodeId: null, paused: null })),
   // pause is a session-status flip; node stays pending so its buttons remain
@@ -105,4 +125,10 @@ export const useStore = create<State>((set) => ({
     })),
   setResumed: () => set(() => ({ paused: null })),
   setUserPanned: (v) => set(() => ({ userPanned: v })),
+  setPanEnabled: (v) => set(() => ({ panEnabled: v })),
+  setToast: (msg) =>
+    set(() => ({
+      toast: msg,
+      toastClearAt: msg ? Date.now() + 4000 : 0,
+    })),
 }));

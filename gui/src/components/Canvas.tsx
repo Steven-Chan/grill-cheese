@@ -32,6 +32,8 @@ function CanvasInner() {
   const pendingNodeId = useStore((s) => s.pendingNodeId);
   const userPanned = useStore((s) => s.userPanned);
   const setUserPanned = useStore((s) => s.setUserPanned);
+  const panEnabled = useStore((s) => s.panEnabled);
+  const setPanEnabled = useStore((s) => s.setPanEnabled);
   const rf = useReactFlow();
   // ref guards against re-firing setCenter on `node_updated` SSE events
   // (which mutate `nodes` → `rfNodes` recomputes → effect re-runs while
@@ -57,25 +59,36 @@ function CanvasInner() {
       type: n.kind === "summary" ? "summary" : "decision",
       position: { x: 0, y: 0 },
       data: { node: n, isPending: pendingNodeId === n.id },
-      draggable: true,
+      // dagre layoutTree is authoritative; manual drags get wiped on next push
+      draggable: false,
     }));
     const flowEdges: Edge[] = [];
     const visibleIds = new Set(visible.map((n) => n.id));
     for (const n of visible) {
+      const removedSet = new Set(n.removed_branch_ids ?? []);
       for (const b of n.branches) {
         if (b.child_node_id && visibleIds.has(b.child_node_id)) {
-          const isChosenPath = b.state === "chosen";
+          const isChosenPath = b.id === n.chosen_branch_id;
+          const isRemoved = removedSet.has(b.id);
+          // redirect edges (chatted node abandoned) carry a special label
+          const isRedirectEdge = !!n.redirected;
+          const edgeLabel = isRedirectEdge ? `redirected: ${b.label}` : b.label;
           flowEdges.push({
             id: `${n.id}:${b.id}`,
             source: n.id,
             sourceHandle: b.id,
             target: b.child_node_id,
-            label: b.label,
-            animated: isChosenPath,
+            label: edgeLabel,
+            animated: isChosenPath || isRedirectEdge,
             style: {
-              stroke: isChosenPath ? "var(--gc-accent)" : "var(--gc-edge)",
-              strokeWidth: isChosenPath ? 2 : 1,
-              opacity: b.state === "rejected" ? 0.25 : 1,
+              stroke: isChosenPath
+                ? "var(--gc-accent)"
+                : isRedirectEdge
+                  ? "var(--gc-impl)"
+                  : "var(--gc-edge)",
+              strokeWidth: isChosenPath || isRedirectEdge ? 2 : 1,
+              opacity: isRemoved ? 0.25 : 1,
+              strokeDasharray: isRedirectEdge ? "6 4" : undefined,
             },
             labelStyle: { fontSize: 11, fontFamily: "var(--gc-mono)" },
           });
@@ -232,22 +245,57 @@ function CanvasInner() {
       proOptions={{ hideAttribution: true }}
       defaultEdgeOptions={{ type: "smoothstep" }}
       onMoveStart={handleMoveStart}
+      panOnDrag={panEnabled}
+      nodesDraggable={false}
     >
       <Background gap={32} size={1} color="var(--gc-grid)" />
       <Controls />
-      {showJump && (
-        <Panel position="top-right">
+      <Panel position="top-right">
+        <div className="gc-fab-stack">
           <button
-            className={`gc-jump-btn${isActive ? " active" : ""}`}
-            onClick={jumpToPending}
-            aria-label="Recenter on current question"
-            title="Recenter on current question"
+            className={`gc-pan-btn${panEnabled ? " active" : ""}`}
+            onClick={() => setPanEnabled(!panEnabled)}
+            aria-label={panEnabled ? "Lock canvas (disable drag-to-pan)" : "Unlock canvas (enable drag-to-pan)"}
+            title={panEnabled ? "Disable drag-to-pan" : "Enable drag-to-pan"}
+            aria-pressed={panEnabled}
           >
-            <RecenterIcon />
+            <PanIcon enabled={panEnabled} />
           </button>
-        </Panel>
-      )}
+          {showJump && (
+            <button
+              className={`gc-jump-btn${isActive ? " active" : ""}`}
+              onClick={jumpToPending}
+              aria-label="Recenter on current question"
+              title="Recenter on current question"
+            >
+              <RecenterIcon />
+            </button>
+          )}
+        </div>
+      </Panel>
     </ReactFlow>
+  );
+}
+
+// Hand glyph (active) / locked-hand (inactive) — toggles drag-to-pan.
+function PanIcon({ enabled }: { enabled: boolean }) {
+  if (enabled) {
+    // Open hand — pan active
+    return (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11" />
+        <path d="M12 11V4a1.5 1.5 0 0 1 3 0v7" />
+        <path d="M15 11V5.5a1.5 1.5 0 0 1 3 0V14" />
+        <path d="M9 11V8a1.5 1.5 0 0 0-3 0v8a6 6 0 0 0 6 6h1a6 6 0 0 0 6-6v-2" />
+      </svg>
+    );
+  }
+  // Padlock — pan locked
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="5" y="11" width="14" height="9" rx="2" />
+      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+    </svg>
   );
 }
 
