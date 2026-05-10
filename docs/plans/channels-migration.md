@@ -251,7 +251,7 @@ Spawn `feature-dev:code-reviewer` with the diff. Address any critical issues. Re
 | `gui/src/types.ts` | Add `seq` to `NodeCommittedEvent`; remove `WaitForActionResult` if mirrored |
 | `pyproject.toml` | Add `httpx` if not already present (for shim → HTTP server) |
 | `claude-mcp-config.example.json` | Update to show stdio shim registration + Channels flag |
-| `PLAN-channels-migration.md` | This doc |
+| `docs/plans/channels-migration.md` | This doc |
 
 ## Out of scope (later PRs)
 

@@ -2,7 +2,7 @@
 
 Path: ~/.grill-cheese/project-{slug}/sessions/{session_id}.events.jsonl
 
-Drives two deferred decisions (see PLAN-channels-migration.md):
+Drives two deferred decisions (see docs/plans/channels-migration.md):
   * end-turn enforcement: if "next_call" arrives <100ms after "push" with
     a non-allowlisted tool, mark `violation: true`. >5% rate triggers
     yield_turn() escalation.
