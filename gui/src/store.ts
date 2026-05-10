@@ -4,6 +4,7 @@ import type { DecisionNode, HookTrace, PausedState, SessionMeta } from "./types"
 interface State {
   sessions: SessionMeta[];
   activeSessionId: string | null;
+  title: string | null;
   brief: string;
   nodes: Record<string, DecisionNode>;
   hookTraces: Record<string, HookTrace[]>; // node_id -> traces
@@ -16,6 +17,7 @@ interface State {
   toastClearAt: number; // wall ms when toast should clear
 
   setActive(sid: string): void;
+  setTitle(t: string | null): void;
   setBrief(b: string): void;
   addNode(n: DecisionNode): void;
   updateNode(n: DecisionNode): void;
@@ -35,6 +37,7 @@ interface State {
 export const useStore = create<State>((set) => ({
   sessions: [],
   activeSessionId: null,
+  title: null,
   brief: "",
   nodes: {},
   hookTraces: {},
@@ -46,9 +49,18 @@ export const useStore = create<State>((set) => ({
   toast: null,
   toastClearAt: 0,
 
-  setActive: (sid) =>
+  setActive: (sid) => {
+    const cur = useStore.getState();
+    const meta = cur.sessions.find((s) => s.id === sid);
+    // picker-pick path: hydrate from session list (use meta values even if title null).
+    // session_started path: meta is undefined (list arrives after the start event) —
+    // session_started already called setTitle/setBrief, so preserve current values.
+    const title = meta ? meta.title : cur.title;
+    const brief = meta ? meta.brief : cur.brief;
     set(() => ({
       activeSessionId: sid,
+      title,
+      brief,
       nodes: {},
       hookTraces: {},
       pendingNodeId: null,
@@ -56,7 +68,9 @@ export const useStore = create<State>((set) => ({
       paused: null,
       userPanned: false,
       panEnabled: false,
-    })),
+    }));
+  },
+  setTitle: (t) => set(() => ({ title: t })),
   setBrief: (b) => set(() => ({ brief: b })),
   addNode: (n) =>
     set((s) => ({
@@ -102,6 +116,7 @@ export const useStore = create<State>((set) => ({
   reset: () =>
     set(() => ({
       activeSessionId: null,
+      title: null,
       brief: "",
       nodes: {},
       hookTraces: {},

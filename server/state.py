@@ -105,9 +105,11 @@ class Store:
         return None
 
     # ---- sessions ----
-    def new_session(self, brief: str, project: str) -> Session:
+    def new_session(self, title: str, brief: str, project: str) -> Session:
         sid = uuid.uuid4().hex[:12]
-        s = Session(id=sid, brief=brief, project=project, started_at=time.time())
+        s = Session(
+            id=sid, title=title, brief=brief, project=project, started_at=time.time()
+        )
         self.sessions[sid] = s
         self._persist(s)
         return s
@@ -597,7 +599,16 @@ class Store:
         For redirected nodes, follows the parent-branch wiring of the next
         node since the chatted node has no chosen branch.
         """
-        lines = [f"# Grill Session — {session.id}", "", f"**Brief:** {session.brief}", ""]
+        title = session.title or session.brief[:80]
+        iso = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(session.started_at))
+        lines = [
+            f"# {title}",
+            "",
+            f"*Session: {session.id} · started: {iso}*",
+            "",
+            f"**Brief:** {session.brief}",
+            "",
+        ]
         if not session.root_node_id:
             return "\n".join(lines)
         visited: set[str] = set()
@@ -691,7 +702,9 @@ class Store:
                 "sessions": [
                     {
                         "id": s.id,
+                        "title": s.title,
                         "brief": s.brief,
+                        "project": s.project,
                         "started_at": s.started_at,
                         "status": s.status,
                         "has_pending": self._has_pending(s.id),

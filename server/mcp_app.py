@@ -16,16 +16,22 @@ from .schemas import (
 )
 from .state import store
 
+TITLE_MAX = 80
+
 
 mcp = FastMCP("grill-cheese", json_response=True, streamable_http_path="/")
 
 
 @mcp.tool()
-async def start_session(brief: str, project: str) -> dict:
+async def start_session(title: str, brief: str, project: str) -> dict:
     """Start a new grill session. Call once at the very start.
 
     Args:
-        brief: The user's plan / proposal / question to be grilled.
+        title: Short headline for the session — imperative noun phrase,
+               project-style (e.g. "Add billing system", "Refactor SSE pubsub").
+               Required, ≤80 chars. Shown in the toolbar + session picker.
+        brief: The user's plan / proposal / question to be grilled. Full text;
+               rendered as markdown in the collapsible brief banner.
         project: Repo / directory slug for on-disk session path partitioning.
                  Skill should pass `git rev-parse --show-toplevel | xargs basename`
                  (or cwd basename as fallback). Required.
@@ -35,13 +41,22 @@ async def start_session(brief: str, project: str) -> dict:
     if not project or not project.strip():
         return {"error": "project must be a non-empty string"}
     project = project.strip()
-    s = store.new_session(brief, project)
+    if not title or not title.strip():
+        return {"error": "title must be a non-empty string"}
+    title = title.strip()
+    if len(title) > TITLE_MAX:
+        return {"error": f"title must be ≤{TITLE_MAX} chars (got {len(title)})"}
+    s = store.new_session(title, brief, project)
     await store.broadcast(
         s.id,
         {
             "type": "session_started",
             "session_id": s.id,
-            "payload": {"brief": brief, "started_at": s.started_at},
+            "payload": {
+                "title": title,
+                "brief": brief,
+                "started_at": s.started_at,
+            },
         },
     )
     await store.broadcast_session_list()

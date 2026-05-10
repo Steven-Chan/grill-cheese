@@ -80,6 +80,7 @@ class Session(BaseModel):
     model_config = {"extra": "ignore"}
 
     id: str
+    title: Optional[str] = None
     brief: str
     project: str = ""
     schema_version: int = 1

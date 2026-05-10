@@ -185,7 +185,9 @@ async def sessions_endpoint(request: Request) -> Response:
             "sessions": [
                 {
                     "id": s.id,
+                    "title": s.title,
                     "brief": s.brief,
+                    "project": s.project,
                     "started_at": s.started_at,
                     "status": s.status,
                     "has_pending": store._has_pending(s.id),
@@ -211,7 +213,16 @@ async def export_md_endpoint(request: Request) -> Response:
     s = store.get(sid)
     if not s:
         return Response("# not found", status_code=404)
-    lines = [f"# Grill Session — {s.id}", "", f"**Brief:** {s.brief}", ""]
+    title = s.title or s.brief[:80]
+    iso = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(s.started_at))
+    lines = [
+        f"# {title}",
+        "",
+        f"*Session: {s.id} · started: {iso}*",
+        "",
+        f"**Brief:** {s.brief}",
+        "",
+    ]
     if s.root_node_id:
         _render_md(s, s.root_node_id, lines, depth=0, visited=set())
     return Response("\n".join(lines), media_type="text/markdown")

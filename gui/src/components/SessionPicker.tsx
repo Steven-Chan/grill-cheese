@@ -90,6 +90,9 @@ function SessionRow({
 }) {
   // * shown only for non-current sessions with pending action
   const showStar = meta.has_pending && !isCurrent;
+  // title fallback: brief[:80] for legacy sessions, "(untitled)" if both empty
+  const displayTitle =
+    meta.title || (meta.brief ? meta.brief.slice(0, 80) : "(untitled)");
   return (
     <li>
       <button
@@ -100,7 +103,12 @@ function SessionRow({
         <span className="gc-session-star" aria-hidden>
           {showStar ? "●" : ""}
         </span>
-        <span className="gc-session-brief">{meta.brief || <em>(no brief)</em>}</span>
+        <span className="gc-session-text">
+          <strong className="gc-session-title">{displayTitle}</strong>
+          {meta.brief && (
+            <span className="gc-session-brief-secondary">{meta.brief}</span>
+          )}
+        </span>
         {meta.status !== "active" && (
           <span className={`gc-session-badge ${meta.status}`}>{meta.status}</span>
         )}

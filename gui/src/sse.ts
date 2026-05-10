@@ -50,6 +50,7 @@ function handle(raw: string) {
       s.setSessions(ev.payload.sessions);
       break;
     case "session_started":
+      s.setTitle(ev.payload.title);
       s.setBrief(ev.payload.brief);
       if (!s.activeSessionId) s.setActive(ev.session_id);
       break;

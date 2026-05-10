@@ -33,8 +33,24 @@ def push_click(sid: str, node_id: str, action: str, branch_id: str | None = None
 
 
 async def main():
-    sid = store.new_session(brief="smoke buffered loop", project="smoke").id
+    s_obj = store.new_session(
+        title="Smoke buffered loop",
+        brief="smoke buffered loop",
+        project="smoke",
+    )
+    sid = s_obj.id
+    assert s_obj.title == "Smoke buffered loop", "title round-trip"
     print(f"session={sid}")
+
+    # MCP boundary validation: empty title / overlong title / empty project
+    from server.mcp_app import start_session as _start
+    r_empty = await _start(title="", brief="b", project="p")
+    assert r_empty.get("error"), "empty title must error"
+    r_long = await _start(title="x" * 81, brief="b", project="p")
+    assert r_long.get("error"), "overlong title must error"
+    r_empty_proj = await _start(title="ok", brief="b", project="")
+    assert r_empty_proj.get("error"), "empty project must error"
+    print("OK — MCP start_session rejects empty/overlong title and empty project")
 
     branches = [
         Branch(id="b1", label="A", rationale="", is_recommended=True),

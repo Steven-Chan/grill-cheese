@@ -20,7 +20,7 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
    ```
    git rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$PWD"
    ```
-   Save the trimmed output as `project`. Then call `start_session(brief=<the user's plan>, project=<project>)`. Save the returned `session_id`. The server uses `project` to partition session JSON files under `~/.grill-cheese/project-<project>/session/`.
+   Save the trimmed output as `project`. Then compose a `title` — short imperative noun phrase, project-style (e.g. `Add billing system`, `Refactor SSE pubsub`). Hard cap **80 chars**, server rejects empty / overlong. Then call `start_session(title=<title>, brief=<the user's plan>, project=<project>)`. Save the returned `session_id`. The server uses `project` to partition session JSON files under `~/.grill-cheese/project-<project>/session/`. The title shows in the toolbar and session picker; the brief lives in a collapsible banner below.
 
 2. **Generate the next question.** Identify the *single most important live decision* given everything you know so far (the brief + every answer the user has given). Frame it as one focused question, like /grill-me would. Generate **2–4 candidate answers** as branches with one-sentence rationales; mark exactly one `is_recommended: true` (your honest pick).
 
@@ -146,7 +146,11 @@ The `summary` arg to `present_summary` should be a substantive markdown recap �
 ## Example tool calls
 
 ```
-start_session(brief="I want to add a billing system to my SaaS")
+start_session(
+  title="Add billing system",                                    # ≤80 chars, imperative noun phrase
+  brief="I want to add a billing system to my SaaS",
+  project="my-saas"
+)
 → {session_id: "ab12cd34"}
 
 present_branches(

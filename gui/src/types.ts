@@ -67,7 +67,9 @@ export type SessionStatus = "active" | "paused" | "ended";
 
 export interface SessionMeta {
   id: string;
+  title: string | null;
   brief: string;
+  project?: string;
   started_at: number;
   status: SessionStatus;
   has_pending: boolean;
@@ -81,7 +83,7 @@ export interface PausedState {
 export type SseEvent =
   | { type: "hello"; session_id: string; payload: Record<string, unknown> }
   | { type: "ping"; session_id: string; payload: Record<string, unknown> }
-  | { type: "session_started"; session_id: string; payload: { brief: string; started_at: number } }
+  | { type: "session_started"; session_id: string; payload: { title: string | null; brief: string; started_at: number } }
   | { type: "session_list"; session_id: ""; payload: { sessions: SessionMeta[] } }
   | { type: "session_ended"; session_id: string; payload: { summary: string; ended_at: number } }
   | { type: "session_paused"; session_id: string; payload: { node_id: string; branch_id: string | null } }

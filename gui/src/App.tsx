@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Canvas } from "./components/Canvas";
 import { Toolbar } from "./components/Toolbar";
+import { BriefBanner } from "./components/BriefBanner";
 import { connectSse } from "./sse";
 import { useStore } from "./store";
 import { listSessions } from "./api";
@@ -39,6 +40,8 @@ export default function App() {
   return (
     <div className="gc-app">
       <Toolbar />
+      <BriefBanner />
+      <PausedNotice />
       <main className="gc-canvas-wrap">
         {sid ? <Canvas /> : <EmptyState />}
       </main>
@@ -54,6 +57,30 @@ export default function App() {
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+function PausedNotice() {
+  const paused = useStore((s) => s.paused);
+  const nodes = useStore((s) => s.nodes);
+  if (!paused) return null;
+  const branchLabel = paused.branch_id
+    ? nodes[paused.node_id]?.branches.find((b) => b.id === paused.branch_id)
+        ?.label
+    : null;
+  return (
+    <div className="gc-paused">
+      <strong>paused</strong> — chatting in Claude Code about
+      {branchLabel ? (
+        <>
+          {" "}
+          branch <em>{branchLabel}</em>
+        </>
+      ) : (
+        <> this question</>
+      )}
+      . Push another question from CC to resume.
     </div>
   );
 }

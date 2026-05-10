@@ -6,9 +6,9 @@ import { SessionPicker } from "./SessionPicker";
 export function Toolbar() {
   const sid = useStore((s) => s.activeSessionId);
   const sessions = useStore((s) => s.sessions);
+  const title = useStore((s) => s.title);
   const brief = useStore((s) => s.brief);
   const pendingNodeId = useStore((s) => s.pendingNodeId);
-  const paused = useStore((s) => s.paused);
   const nodes = useStore((s) => s.nodes);
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -29,14 +29,34 @@ export function Toolbar() {
     await postAction(sid, pendingNodeId, "stop");
   };
 
+  // title fallback for legacy sessions where title is null
+  const displayTitle = sid ? (title || (brief ? brief.slice(0, 80) : "")) : "";
+  const meta = sid ? sessions.find((s) => s.id === sid) : undefined;
+  const isEnded = meta?.status === "ended";
+
   return (
     <header className="gc-toolbar">
-      <div className="gc-brand">
-        <span className="gc-brand-mark">grill</span>
-        <span className="gc-brand-dot">·</span>
-        <span className="gc-brand-mark italic">cheese</span>
+      <div className="gc-brand-logo" aria-label="grill·cheese">
+        {/* placeholder mark — cheese-wedge silhouette */}
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden>
+          <path
+            d="M3 17 L21 7 L21 17 Z"
+            fill="var(--gc-rec)"
+            stroke="var(--gc-rec)"
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+          />
+          <circle cx="9" cy="14" r="1" fill="var(--gc-bg)" />
+          <circle cx="14" cy="12" r="0.9" fill="var(--gc-bg)" />
+          <circle cx="17" cy="14.5" r="0.7" fill="var(--gc-bg)" />
+        </svg>
       </div>
-      <div className="gc-brief">{brief || <em className="gc-dim">awaiting brief…</em>}</div>
+      {sid && displayTitle && (
+        <h1 className="gc-toolbar-title" title={displayTitle}>
+          {displayTitle}
+        </h1>
+      )}
+      {sid && isEnded && <span className="gc-toolbar-ended">ended</span>}
       <div className="gc-actions">
         {sid && (
           <>
@@ -63,20 +83,6 @@ export function Toolbar() {
           )}
         </button>
       </div>
-      {paused && (
-        <div className="gc-paused">
-          <strong>paused</strong> — chatting in Claude Code about
-          {paused.branch_id ? (
-            (() => {
-              const n = nodes[paused.node_id];
-              const b = n?.branches.find((x) => x.id === paused.branch_id);
-              return <> branch <em>{b?.label || paused.branch_id}</em></>;
-            })()
-          ) : (
-            <> this question</>
-          )}. Push another question from CC to resume.
-        </div>
-      )}
       <SessionPicker open={pickerOpen} onClose={() => setPickerOpen(false)} />
     </header>
   );
