@@ -195,9 +195,22 @@ function CanvasInner() {
     }, FOCUS_DURATION_MS + 50);
   };
 
-  const jumpToPending = () => {
-    if (!pendingNodeId) return;
-    const node = rf.getInternalNode(pendingNodeId);
+  // last node = most recently created. Recenter target regardless of pending.
+  const lastNodeId = useMemo(() => {
+    let bestId: string | null = null;
+    let bestT = -Infinity;
+    for (const n of Object.values(nodes)) {
+      if (n.created_at > bestT) {
+        bestT = n.created_at;
+        bestId = n.id;
+      }
+    }
+    return bestId;
+  }, [nodes]);
+
+  const jumpToLast = () => {
+    if (!lastNodeId) return;
+    const node = rf.getInternalNode(lastNodeId);
     if (!node) return;
     const w = node.measured?.width ?? NODE_W;
     const h = node.measured?.height ?? NODE_H;
@@ -223,7 +236,6 @@ function CanvasInner() {
     setUserPanned(true);
   };
 
-  const showJump = pendingNodeId !== null;
   const isActive = userPanned;
 
   return (
@@ -251,16 +263,15 @@ function CanvasInner() {
           >
             <PanIcon enabled={panEnabled} />
           </button>
-          {showJump && (
-            <button
-              className={`gc-jump-btn${isActive ? " active" : ""}`}
-              onClick={jumpToPending}
-              aria-label="Recenter on current question"
-              title="Recenter on current question"
-            >
-              <RecenterIcon />
-            </button>
-          )}
+          <button
+            className={`gc-jump-btn${isActive ? " active" : ""}`}
+            onClick={jumpToLast}
+            disabled={!lastNodeId}
+            aria-label="Recenter on latest node"
+            title="Recenter on latest node"
+          >
+            <RecenterIcon />
+          </button>
         </div>
       </Panel>
     </ReactFlow>
