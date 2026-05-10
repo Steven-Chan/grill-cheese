@@ -357,16 +357,17 @@ body,
   color: var(--gc-fg);
   margin-bottom: 8px;
 }
-.gc-node-reasoning {
-  margin-bottom: 10px;
-}
 .gc-node-reasoning-body {
-  margin-top: 6px;
+  margin-bottom: 10px;
   font-size: 11px;
+  line-height: 1.5;
   color: var(--gc-fg-dim);
   font-style: italic;
   border-left: 2px solid var(--gc-edge);
   padding: 4px 0 4px 8px;
+  /* cap to ~5 lines, scroll on overflow */
+  max-height: calc(5 * 1.5em + 8px);
+  overflow-y: auto;
 }
 
 /* branches */
@@ -429,9 +430,25 @@ body,
   margin-left: 6px;
   color: var(--gc-rec);
 }
-.gc-branch-toggle {
-  font-size: 10px;
-  margin-top: 4px;
+.gc-branch-chevron {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 2px;
+  margin: -2px -2px -2px 4px;
+  color: var(--gc-fg-faint);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 140ms ease, color 120ms ease;
+}
+.gc-branch-chevron:hover {
+  color: var(--gc-fg);
+}
+.gc-branch-chevron.open {
+  transform: rotate(180deg);
+  color: var(--gc-fg-dim);
 }
 .gc-branch-rationale {
   margin-top: 4px;

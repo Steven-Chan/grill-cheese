@@ -19,7 +19,6 @@ export function DecisionNode({ data }: NodeProps) {
   const { node, isPending } = data as unknown as Data;
   const sid = useStore((s) => s.activeSessionId);
   const traces = useStore((s) => s.hookTraces[node.id] || []);
-  const [open, setOpen] = useState(false);
   const [hooksOpen, setHooksOpen] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
   const [otherText, setOtherText] = useState("");
@@ -57,12 +56,7 @@ export function DecisionNode({ data }: NodeProps) {
       </div>
       <div className="gc-node-q">{node.question}</div>
       {node.reasoning && (
-        <div className="gc-node-reasoning">
-          <button className="gc-link" onClick={() => setOpen((o) => !o)}>
-            {open ? "hide reasoning" : "why this question"}
-          </button>
-          {open && <div className="gc-node-reasoning-body">{node.reasoning}</div>}
-        </div>
+        <div className="gc-node-reasoning-body">{node.reasoning}</div>
       )}
       <div className="gc-branches">
         {node.branches.map((b) => (
@@ -175,16 +169,31 @@ function BranchRow({
           {branch.label}
           {branch.is_recommended && <span className="gc-rec">★</span>}
         </span>
+        {branch.rationale && (
+          <button
+            type="button"
+            className={`gc-branch-chevron nodrag ${showRationale ? "open" : ""}`}
+            onClick={() => setShowRationale((o) => !o)}
+            aria-expanded={showRationale}
+            aria-label={showRationale ? "hide rationale" : "show rationale"}
+            title={showRationale ? "hide rationale" : "show rationale"}
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+              <path
+                d="M2.5 4.5L6 8l3.5-3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+        )}
       </div>
-      {branch.rationale && (
-        <button
-          className="gc-link gc-branch-toggle"
-          onClick={() => setShowRationale((o) => !o)}
-        >
-          {showRationale ? "hide" : "rationale"}
-        </button>
+      {showRationale && branch.rationale && (
+        <div className="gc-branch-rationale">{branch.rationale}</div>
       )}
-      {showRationale && <div className="gc-branch-rationale">{branch.rationale}</div>}
       {!committed && (
         <div className="gc-branch-actions">
           {branch.state === "chosen" ? (
