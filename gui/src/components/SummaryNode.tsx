@@ -50,6 +50,8 @@ const BUTTONS: ButtonSpec[] = [
 export function SummaryNode({ data }: NodeProps) {
   const { node, isPending } = data as unknown as Data;
   const sid = useStore((s) => s.activeSessionId);
+  const hydratedAt = useStore((s) => s.sessionHydratedAt);
+  const isFresh = node.created_at >= hydratedAt;
   const [noteText, setNoteText] = useState("");
   const committed = !!node.committed;
 
@@ -77,6 +79,7 @@ export function SummaryNode({ data }: NodeProps) {
   return (
     <div className={`gc-summary-node ${isPending && !committed ? "pending" : ""} ${committed ? "committed" : ""}`}>
       <Handle type="target" position={Position.Left} />
+      <div className="gc-node-inner" data-fresh={isFresh ? "true" : "false"}>
       <div className="gc-summary-head">
         <span className="gc-node-tag">summary</span>
         {isPending && !committed && <span className="gc-node-tag pulse">awaiting verdict</span>}
@@ -115,6 +118,7 @@ export function SummaryNode({ data }: NodeProps) {
             );
           })}
         </div>
+      </div>
       </div>
       {/* Source handle for the synthetic continuation branch — only meaningful
           after continue_grill commits and the branch exists. */}

@@ -13,6 +13,8 @@ export function DecisionNode({ data }: NodeProps) {
   const { node, isPending } = data as unknown as Data;
   const sid = useStore((s) => s.activeSessionId);
   const traces = useStore((s) => s.hookTraces[node.id] || []);
+  const hydratedAt = useStore((s) => s.sessionHydratedAt);
+  const isFresh = node.created_at >= hydratedAt;
   const [hooksOpen, setHooksOpen] = useState(false);
   const [otherOpen, setOtherOpen] = useState(false);
   const [otherText, setOtherText] = useState("");
@@ -61,6 +63,7 @@ export function DecisionNode({ data }: NodeProps) {
   return (
     <div className={wrapperClasses}>
       <Handle type="target" position={Position.Left} />
+      <div className="gc-node-inner" data-fresh={isFresh ? "true" : "false"}>
       <div className="gc-node-head">
         <span className="gc-node-depth">d{node.depth}</span>
         {node.implicit && <span className="gc-node-tag">implicit</span>}
@@ -198,6 +201,7 @@ export function DecisionNode({ data }: NodeProps) {
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

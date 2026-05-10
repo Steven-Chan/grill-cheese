@@ -1051,3 +1051,91 @@ body,
   color: var(--gc-accent);
   filter: brightness(1.1);
 }
+
+/* enter choreography: card scale+fade, branches stagger */
+.gc-node-inner {
+  transform-origin: center top;
+}
+.gc-node-inner[data-fresh="true"] {
+  animation: gc-card-enter 200ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+@keyframes gc-card-enter {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes gc-branch-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+/* branches start invisible; cascade in 200ms after card lands, 100ms per row.
+   targets .gc-branch inside decision node + verdict buttons inside summary node. */
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch,
+.gc-node-inner[data-fresh="true"] .gc-summary-btns > .gc-btn {
+  opacity: 0;
+  animation: gc-branch-enter 180ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch:nth-child(1),
+.gc-node-inner[data-fresh="true"] .gc-summary-btns > .gc-btn:nth-child(1) { animation-delay: 200ms; }
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch:nth-child(2),
+.gc-node-inner[data-fresh="true"] .gc-summary-btns > .gc-btn:nth-child(2) { animation-delay: 300ms; }
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch:nth-child(3),
+.gc-node-inner[data-fresh="true"] .gc-summary-btns > .gc-btn:nth-child(3) { animation-delay: 400ms; }
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch:nth-child(4),
+.gc-node-inner[data-fresh="true"] .gc-summary-btns > .gc-btn:nth-child(4) { animation-delay: 500ms; }
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch:nth-child(5) { animation-delay: 600ms; }
+.gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch:nth-child(6) { animation-delay: 700ms; }
+
+/* press-scale 0.96 — tactile feedback on every clickable surface.
+   uses CSS `scale` property (not transform) so it composes with xyflow's
+   transform-based positioning + existing hover translateY on FABs.
+   transform included in transition list so FAB hover translateY keeps easing.
+   row-shaped surfaces (.gc-brief-strip, .gc-session-row) intentionally
+   excluded — full-row shrink feels wrong on click. */
+.gc-btn,
+.gc-jump-btn,
+.gc-pan-btn,
+.gc-link,
+.gc-branch-chevron,
+.gc-modal-x,
+.gc-toast-x,
+.gc-pressable {
+  transition-property: scale, color, border-color, background, filter, transform;
+  transition-duration: 120ms;
+  transition-timing-function: ease;
+}
+.gc-btn:active:not(:disabled),
+.gc-jump-btn:active,
+.gc-pan-btn:active,
+.gc-link:active,
+.gc-branch-chevron:active,
+.gc-modal-x:active,
+.gc-toast-x:active,
+.gc-pressable:active {
+  scale: 0.96;
+  transition-duration: 80ms;
+}
+
+/* accessibility: respect reduced-motion pref — skip enter anim + press scale */
+@media (prefers-reduced-motion: reduce) {
+  .gc-node-inner,
+  .gc-node-inner[data-fresh="true"],
+  .gc-node-inner[data-fresh="true"] .gc-branches > .gc-branch,
+  .gc-node-inner[data-fresh="true"] .gc-summary-btns > .gc-btn {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .gc-btn:active,
+  .gc-jump-btn:active,
+  .gc-pan-btn:active,
+  .gc-link:active,
+  .gc-branch-chevron:active,
+  .gc-modal-x:active,
+  .gc-toast-x:active,
+  .gc-pressable:active {
+    scale: 1 !important;
+  }
+  .gc-node-tag.pulse {
+    animation: none !important;
+  }
+}

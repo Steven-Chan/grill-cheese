@@ -15,6 +15,9 @@ interface State {
   panEnabled: boolean; // session-only: drag-to-pan toggle (default off)
   toast: string | null;
   toastClearAt: number; // wall ms when toast should clear
+  // seconds since epoch; nodes with created_at >= this animate on mount.
+  // hydrated nodes (created before connect) have created_at < this -> no anim.
+  sessionHydratedAt: number;
 
   setActive(sid: string): void;
   setTitle(t: string | null): void;
@@ -48,6 +51,7 @@ export const useStore = create<State>((set) => ({
   panEnabled: false,
   toast: null,
   toastClearAt: 0,
+  sessionHydratedAt: 0,
 
   setActive: (sid) => {
     const cur = useStore.getState();
@@ -68,6 +72,10 @@ export const useStore = create<State>((set) => ({
       paused: null,
       userPanned: false,
       panEnabled: false,
+      // 2s grace: nodes created within 2s of activation count as fresh.
+      // covers new-session case where first node was pushed ~ms before
+      // session_started arrived; old session hydration has nodes much older.
+      sessionHydratedAt: Date.now() / 1000 - 2,
     }));
   },
   setTitle: (t) => set(() => ({ title: t })),
@@ -127,6 +135,7 @@ export const useStore = create<State>((set) => ({
       panEnabled: false,
       toast: null,
       toastClearAt: 0,
+      sessionHydratedAt: 0,
     })),
   setEnded: (summary) => set(() => ({ endedSummary: summary, pendingNodeId: null, paused: null })),
   // pause is a session-status flip; node stays pending so its buttons remain
