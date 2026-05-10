@@ -68,7 +68,7 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 
 ## Depth + breadth budget
 
-- Soft cap: depth 5 from any root question. Beyond that, push a node whose branches are "go deeper" / "stop here" and let the user pick.
+- Soft cap: depth 15 from any root question. Beyond that, push a node whose branches are "go deeper" / "stop here" and let the user pick.
 - Implicit decisions: cap at ~5 per session. If you find yourself recording many, you're not grilling — push them as real questions.
 
 ## Path context
