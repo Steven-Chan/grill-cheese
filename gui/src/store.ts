@@ -138,7 +138,15 @@ export const useStore = create<State>((set) => ({
       // after refresh) — buttons must always be live on the paused node.
       pendingNodeId: s.pendingNodeId ?? p.node_id,
     })),
-  setResumed: () => set(() => ({ paused: null })),
+  // chat flushed earlier set pendingNodeId=null (committed=true). After
+  // refine/resolve unlocks the node, server clears committed_actions but
+  // pendingNodeId stays null on the client. Restore it from paused.node_id
+  // so pick buttons re-appear on the chatted node.
+  setResumed: () =>
+    set((s) => ({
+      paused: null,
+      pendingNodeId: s.pendingNodeId ?? s.paused?.node_id ?? null,
+    })),
   setUserPanned: (v) => set(() => ({ userPanned: v })),
   setPanEnabled: (v) => set(() => ({ panEnabled: v })),
   setToast: (msg) =>
