@@ -46,6 +46,10 @@ export interface DecisionNode {
   chats?: ChatBlock[];
   // true when chat outcome == "redirect" — node abandoned, greyed out
   redirected?: boolean;
+  // server-internal action buffer fields (persistence). GUI ignores.
+  pending_actions?: unknown[];
+  committed_actions?: unknown[];
+  is_flushed?: boolean;
 }
 
 export interface HookTrace {

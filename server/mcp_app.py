@@ -21,15 +21,21 @@ mcp = FastMCP("grill-cheese", json_response=True, streamable_http_path="/")
 
 
 @mcp.tool()
-async def start_session(brief: str) -> dict:
+async def start_session(brief: str, project: str) -> dict:
     """Start a new grill session. Call once at the very start.
 
     Args:
         brief: The user's plan / proposal / question to be grilled.
+        project: Repo / directory slug for on-disk session path partitioning.
+                 Skill should pass `git rev-parse --show-toplevel | xargs basename`
+                 (or cwd basename as fallback). Required.
     Returns:
         {session_id, started_at}
     """
-    s = store.new_session(brief)
+    if not project or not project.strip():
+        return {"error": "project must be a non-empty string"}
+    project = project.strip()
+    s = store.new_session(brief, project)
     await store.broadcast(
         s.id,
         {
@@ -277,6 +283,11 @@ async def record_implicit_decision(
     )
     # mark the synthetic branch chosen so chosen-path walk picks it up
     node.chosen_branch_id = branch.id
+    # add_node persisted before chosen_branch_id was set — re-persist so the
+    # mutation lands on disk for rehydration.
+    s_persist = store.get(session_id)
+    if s_persist:
+        store._persist(s_persist)
     await store.broadcast(
         session_id,
         {
@@ -427,7 +438,8 @@ async def end_session(session_id: str, summary: str = "") -> dict:
     # release per-node action / event entries for nodes in this session
     if s:
         for node_id in list(s.nodes.keys()):
-            store.clear_node_state(node_id)
+            store.clear_node_state(session_id, node_id)
+        store._persist(s)
     await store.broadcast_session_list()
     return {"ok": True}
 

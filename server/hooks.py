@@ -117,6 +117,11 @@ async def actions_endpoint(request: Request) -> Response:
 
     store.enqueue_action(action.session_id, action.node_id, record)
 
+    # Persist node mutations (apply_action mutates chosen_branch_id / branches /
+    # user_note; enqueue_action appends to node.pending_actions).
+    if s:
+        store._persist(s)
+
     # chat: pause session immediately (preserves chat semantics for GUI banner).
     if action.action == "chat":
         _, changed = store.pause_session(
@@ -166,7 +171,8 @@ async def actions_endpoint(request: Request) -> Response:
         if s2:
             for nid in list(s2.nodes.keys()):
                 if nid != action.node_id:
-                    store.clear_node_state(nid)
+                    store.clear_node_state(action.session_id, nid)
+            store._persist(s2)
         await store.broadcast_session_list()
 
     return JSONResponse({"ok": True, "queued": True})

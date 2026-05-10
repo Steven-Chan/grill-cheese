@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import pathlib
 import time
 import uuid
 from collections import defaultdict, deque
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from .schemas import (
     AskBranchesResult,
@@ -34,15 +39,8 @@ class Store:
         self.ring: dict[str, deque[dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=MAX_RING)
         )
-        # node_id -> committed batch of actions (idempotent: once set,
-        # wait_for_action returns the same list)
-        self._actions: dict[str, list[AskBranchesResult]] = {}
-        # node_id -> in-progress buffer (filled by enqueue_action, drained on flush)
-        self._pending: dict[str, list[AskBranchesResult]] = {}
         # node_id -> debounce timer handle (asyncio.TimerHandle from call_later)
         self._timers: dict[str, Any] = {}
-        # node_ids whose buffer has been flushed → locked, reject further clicks
-        self._flushed: set[str] = set()
         # node_id -> Event signalling buffer flushed (lazy-created in get_event)
         self._events: dict[str, asyncio.Event] = {}
         # session_id -> Event signalling status change (pause/resume)
@@ -52,12 +50,66 @@ class Store:
         # global subscribers (all sessions, for index page)
         self._global_subs: list[asyncio.Queue[dict[str, Any]]] = []
         self._lock = asyncio.Lock()
+        # disk root for session JSON snapshots
+        self._data_root: pathlib.Path = pathlib.Path.home() / ".grill-cheese"
+
+    # ---- persistence ----
+    def _session_dir(self, project: str) -> pathlib.Path:
+        slug = project if project else "_default"
+        return self._data_root / f"project-{slug}" / "session"
+
+    def _persist(self, session: Session) -> None:
+        """Atomic write of session JSON. Sync I/O — sessions are KB-scale."""
+        d = self._session_dir(session.project)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+            target = d / f"{session.id}.json"
+            tmp = d / f"{session.id}.json.tmp"
+            tmp.write_text(session.model_dump_json(), encoding="utf-8")
+            os.replace(tmp, target)
+        except Exception:
+            logger.exception("persist failed for session %s", session.id)
+
+    async def _load_all(self) -> None:
+        """Scan ~/.grill-cheese/project-*/session/*.json and rehydrate.
+
+        Discards transient pending_actions per design: a crash mid-debounce
+        forfeits not-yet-flushed clicks (visible node state already persisted).
+        """
+        root = self._data_root
+        if not root.exists():
+            return
+        for f in sorted(root.rglob("session/*.json")):
+            if f.name.endswith(".bad") or f.name.endswith(".tmp"):
+                continue
+            try:
+                raw = f.read_text(encoding="utf-8")
+                s = Session.model_validate_json(raw)
+            except Exception:
+                logger.exception("corrupt session file %s — renaming .bad", f)
+                try:
+                    f.rename(f.with_suffix(".json.bad"))
+                except Exception:
+                    pass
+                continue
+            for node in s.nodes.values():
+                node.pending_actions = []
+            self.sessions[s.id] = s
+            logger.info("rehydrated session %s (%s)", s.id, s.brief[:60])
+
+    def _find_node(self, node_id: str) -> Optional[tuple[Session, Node]]:
+        for s in self.sessions.values():
+            node = s.nodes.get(node_id)
+            if node is not None:
+                return s, node
+        return None
 
     # ---- sessions ----
-    def new_session(self, brief: str) -> Session:
+    def new_session(self, brief: str, project: str) -> Session:
         sid = uuid.uuid4().hex[:12]
-        s = Session(id=sid, brief=brief, started_at=time.time())
+        s = Session(id=sid, brief=brief, project=project, started_at=time.time())
         self.sessions[sid] = s
+        self._persist(s)
         return s
 
     def get(self, sid: str) -> Optional[Session]:
@@ -106,6 +158,7 @@ class Store:
                     if b.id == parent_branch_id:
                         b.child_node_id = node_id
                         break
+        self._persist(s)
         return node
 
     # ---- per-node action buffer (idle-debounce flush) ----
@@ -118,19 +171,31 @@ class Store:
 
     def get_actions(self, node_id: str) -> Optional[list[AskBranchesResult]]:
         """Return committed batch, or None if not yet flushed."""
-        return self._actions.get(node_id)
+        found = self._find_node(node_id)
+        if found is None:
+            return None
+        _, node = found
+        return node.committed_actions if node.is_flushed else None
 
     def is_flushed(self, node_id: str) -> bool:
-        return node_id in self._flushed
+        found = self._find_node(node_id)
+        return bool(found and found[1].is_flushed)
 
     def enqueue_action(
         self, session_id: str, node_id: str, record: AskBranchesResult
     ) -> bool:
         """Append record to pending buffer + reset 750ms idle timer.
-        Returns False if node already locked (caller should reject)."""
-        if node_id in self._flushed:
+        Returns False if node already locked (caller should reject).
+
+        Does NOT persist — the calling endpoint persists once after both
+        apply_action + enqueue_action mutate the session."""
+        s = self.sessions.get(session_id)
+        if not s:
             return False
-        self._pending.setdefault(node_id, []).append(record)
+        node = s.nodes.get(node_id)
+        if not node or node.is_flushed:
+            return False
+        node.pending_actions.append(record)
         existing = self._timers.pop(node_id, None)
         if existing is not None:
             existing.cancel()
@@ -149,14 +214,20 @@ class Store:
 
     def _flush(self, session_id: str, node_id: str) -> None:
         """Move pending → committed, lock node, wake waiters, broadcast event."""
-        if node_id in self._flushed:
+        s = self.sessions.get(session_id)
+        if not s:
+            return
+        node = s.nodes.get(node_id)
+        if not node or node.is_flushed:
             return
         self._timers.pop(node_id, None)
-        pending = self._pending.pop(node_id, [])
+        pending = node.pending_actions[:]
         if not pending:
             return
-        self._actions[node_id] = pending
-        self._flushed.add(node_id)
+        node.pending_actions = []
+        node.committed_actions = pending
+        node.is_flushed = True
+        self._persist(s)
         self.get_event(node_id).set()
         # broadcast committed event (timer callback is sync — schedule task)
         try:
@@ -180,17 +251,22 @@ class Store:
             # no running loop (test teardown) — skip broadcast
             pass
 
-    def clear_node_state(self, node_id: str) -> None:
-        """End-of-session cleanup."""
+    def clear_node_state(self, session_id: str, node_id: str) -> None:
+        """End-of-session cleanup. Caller persists once after batch."""
         timer = self._timers.pop(node_id, None)
         if timer is not None:
             timer.cancel()
-        self._actions.pop(node_id, None)
-        self._pending.pop(node_id, None)
         self._events.pop(node_id, None)
-        self._flushed.discard(node_id)
+        s = self.sessions.get(session_id)
+        if not s:
+            return
+        node = s.nodes.get(node_id)
+        if node:
+            node.pending_actions = []
+            node.committed_actions = []
+            node.is_flushed = False
 
-    def unlock_node(self, node_id: str) -> None:
+    def unlock_node(self, session_id: str, node_id: str) -> None:
         """Unlock a flushed node so clicks can resume.
 
         Used by apply_chat_result on refine: chat result mutates the node;
@@ -201,9 +277,14 @@ class Store:
         timer = self._timers.pop(node_id, None)
         if timer is not None:
             timer.cancel()
-        self._actions.pop(node_id, None)
-        self._pending.pop(node_id, None)
-        self._flushed.discard(node_id)
+        s = self.sessions.get(session_id)
+        if s:
+            node = s.nodes.get(node_id)
+            if node:
+                node.pending_actions = []
+                node.committed_actions = []
+                node.is_flushed = False
+            self._persist(s)
         # rotate event so old waiters who already returned do not re-fire
         old = self._events.pop(node_id, None)
         if old is not None and not old.is_set():
@@ -244,6 +325,7 @@ class Store:
         s.paused_branch_id = branch_id
         if not already:
             self._bump_status_event(sid)
+        self._persist(s)
         return s, not already
 
     def resume_session(self, sid: str) -> Optional[Session]:
@@ -257,6 +339,7 @@ class Store:
         s.paused_node_id = None
         s.paused_branch_id = None
         self._bump_status_event(sid)
+        self._persist(s)
         return s
 
     # ---- branch state mutation from GUI ----
@@ -273,7 +356,7 @@ class Store:
         node = s.nodes.get(action.node_id)
         if not node:
             return None
-        if action.node_id in self._flushed:
+        if node.is_flushed:
             return None  # locked
 
         if action.action == "stop":
@@ -494,7 +577,7 @@ class Store:
         # unlock node (refine/resolve) so user can interact again. redirect
         # leaves the node read-only — user moves on to the new question.
         if outcome in ("refine", "resolve"):
-            self.unlock_node(node_id)
+            self.unlock_node(sid, node_id)
 
         # flip session back to active
         if s.status == "paused":
@@ -503,6 +586,7 @@ class Store:
             s.paused_branch_id = None
             self._bump_status_event(sid)
 
+        self._persist(s)
         return node, redirect_branch_id, None
 
     # ---- chain markdown (chosen-path only) ----
@@ -582,6 +666,7 @@ class Store:
             ev.chat_tag = True
         node_id = ev.grill_node_id or "_unbound"
         s.hook_traces.setdefault(node_id, []).append(ev.model_dump())
+        self._persist(s)
 
     # ---- session-list helpers ----
     def _has_pending(self, sid: str) -> bool:
@@ -594,7 +679,7 @@ class Store:
         for nid, node in s.nodes.items():
             if node.implicit:
                 continue
-            if nid not in self._flushed:
+            if not node.is_flushed:
                 return True
         return False
 

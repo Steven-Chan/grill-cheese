@@ -21,10 +21,12 @@ from .hooks import (
 )
 from .mcp_app import mcp
 from .sse import events_endpoint
+from .state import store
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app: Starlette):
+    await store._load_all()
     async with mcp.session_manager.run():
         yield
 

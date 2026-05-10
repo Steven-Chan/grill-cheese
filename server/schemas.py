@@ -64,6 +64,11 @@ class Node(BaseModel):
     chats: list[ChatBlock] = Field(default_factory=list)
     # set when chat outcome == "redirect" — node abandoned, child carries new question
     redirected: bool = False
+    # persistence: action buffer fields (moved off Store dicts so one
+    # session JSON dump captures full state)
+    pending_actions: list["AskBranchesResult"] = Field(default_factory=list)
+    committed_actions: list["AskBranchesResult"] = Field(default_factory=list)
+    is_flushed: bool = False
 
 
 # ---- session ----
@@ -72,8 +77,12 @@ SessionStatus = Literal["active", "paused", "ended"]
 
 
 class Session(BaseModel):
+    model_config = {"extra": "ignore"}
+
     id: str
     brief: str
+    project: str = ""
+    schema_version: int = 1
     started_at: float
     status: SessionStatus = "active"
     # node_id whose chat-button triggered the pause; cleared on resume

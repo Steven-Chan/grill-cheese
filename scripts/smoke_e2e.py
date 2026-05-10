@@ -33,7 +33,7 @@ def push_click(sid: str, node_id: str, action: str, branch_id: str | None = None
 
 
 async def main():
-    sid = store.new_session(brief="smoke buffered loop").id
+    sid = store.new_session(brief="smoke buffered loop", project="smoke").id
     print(f"session={sid}")
 
     branches = [
