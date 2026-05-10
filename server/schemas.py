@@ -8,8 +8,6 @@ from pydantic import BaseModel, Field
 
 # ---- branch + node ----
 
-BranchState = Literal["considered", "rejected", "chosen"]
-
 
 def _bid() -> str:
     return uuid.uuid4().hex[:8]
@@ -20,11 +18,26 @@ class Branch(BaseModel):
     label: str
     rationale: str = ""
     is_recommended: bool = False
-    state: BranchState = "considered"
     child_node_id: Optional[str] = None
 
 
 NodeKind = Literal["decision", "summary"]
+ChatOutcome = Literal["refine", "redirect", "resolve"]
+
+
+class ChatBlock(BaseModel):
+    """One applied chat result on a node. Accumulates in Node.chats."""
+    chat_id: str
+    summary: str
+    outcome: ChatOutcome
+    applied_at: float
+    branch_id: Optional[str] = None  # set when chat was scoped to a branch
+
+
+class ChatOps(BaseModel):
+    """Branch ops applied on refine. removes -> ids; adds -> new branches."""
+    adds: list[Branch] = Field(default_factory=list)
+    removes: list[str] = Field(default_factory=list)
 
 
 class Node(BaseModel):
@@ -43,6 +56,14 @@ class Node(BaseModel):
     kind: Optional[NodeKind] = None
     # markdown body, populated only when kind == "summary"
     summary_body: Optional[str] = None
+    # picked branch (single source of truth for chosen state)
+    chosen_branch_id: Optional[str] = None
+    # chat-removed branches; soft delete, branch entries stay in branches[]
+    removed_branch_ids: list[str] = Field(default_factory=list)
+    # accumulating chat history applied to this node
+    chats: list[ChatBlock] = Field(default_factory=list)
+    # set when chat outcome == "redirect" — node abandoned, child carries new question
+    redirected: bool = False
 
 
 # ---- session ----
@@ -84,8 +105,8 @@ class SseEvent(BaseModel):
 #                    chat is scoped to a specific branch. Commits + server
 #                    marks session paused. Skill must NOT call end_session;
 #                    next present_branches on the same session auto-resumes.
-# `mark_rejected` /`unmark` = side-tagging branches without committing.
-# `stop`           = user is done; commits a stop action.
+# `stop`           = user is done; commits a stop action (toolbar wrap-up).
+# (mark_rejected / unmark dropped — chat ops own removal now)
 
 class GuiAction(BaseModel):
     session_id: str
@@ -93,7 +114,7 @@ class GuiAction(BaseModel):
     branch_id: Optional[str] = None
     note: Optional[str] = None
     action: Literal[
-        "next", "other", "mark_rejected", "stop", "unmark", "chat",
+        "next", "other", "stop", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ]
 
@@ -120,7 +141,7 @@ class AskBranchesResult(BaseModel):
     chosen_branch_label: Optional[str] = None
     note: Optional[str] = None
     action: Literal[
-        "next", "other", "stop", "chat", "mark_rejected", "unmark",
+        "next", "other", "stop", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ] = "next"
     # full chosen-path markdown — set only on create_plan / implement_now
@@ -150,3 +171,5 @@ class HookEvent(BaseModel):
     # link to grill node if Claude annotated it via env var GRILL_CHEESE_NODE_ID
     grill_node_id: Optional[str] = None
     grill_session_id: Optional[str] = None
+    # set true server-side when hook arrives while session is paused on this node
+    chat_tag: bool = False

@@ -9,6 +9,8 @@ export default function App() {
   const sid = useStore((s) => s.activeSessionId);
   const setActive = useStore((s) => s.setActive);
   const setSessions = useStore((s) => s.setSessions);
+  const toast = useStore((s) => s.toast);
+  const setToast = useStore((s) => s.setToast);
 
   useEffect(() => {
     // initial: connect global stream so we discover the first session
@@ -28,12 +30,30 @@ export default function App() {
     if (sid) connectSse(sid);
   }, [sid]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [toast, setToast]);
+
   return (
     <div className="gc-app">
       <Toolbar />
       <main className="gc-canvas-wrap">
         {sid ? <Canvas /> : <EmptyState />}
       </main>
+      {toast && (
+        <div className="gc-toast" role="status">
+          <span>{toast}</span>
+          <button
+            className="gc-toast-x"
+            aria-label="dismiss"
+            onClick={() => setToast(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -30,7 +30,7 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
            continue                                    # timeout, NOT user inactivity
        break
    ```
-   Server **buffers** every click on the node and **flushes** after a 750ms idle window OR immediately when a terminal-class click lands. The flushed batch is returned as `result.actions` — an ordered list of action records. Each item: `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action, chain_markdown?}`. Per-item action values: `next` | `other` | `stop` | `chat` | `mark_rejected` | `unmark` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`. The last four come from a SummaryNode (see "Ending"); only `create_plan` and `implement_now` populate `chain_markdown`.
+   Server **buffers** every click on the node and **flushes** after a 750ms idle window OR immediately when a terminal-class click lands. The flushed batch is returned as `result.actions` — an ordered list of action records. Each item: `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action, chain_markdown?}`. Per-item action values: `next` | `other` | `stop` | `chat` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`. The last four come from a SummaryNode (see "Ending"); only `create_plan` and `implement_now` populate `chain_markdown`.
 
    `wait_for_action` is idempotent: once flushed, every subsequent call returns the same list. Empty list = no flush yet — re-poll with the same `node_id`.
 
@@ -40,13 +40,12 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 
 5. **Read the batch as a narrative and decide what to ask next.**
 
-   The batch is an ordered story of clicks. Read it end-to-end, last terminal-class action is the user's final word, earlier entries are "changed mind" / context signals.
+   The batch is usually a single terminal click; occasionally it bundles a typed `other` and the chat trigger flushed in the same idle window. The last terminal-class action is the user's final word.
 
-   - **Item with `action == "next"`** → user picked one of your branches at that point. Read `chosen_branch_label` (not the id). Earlier `mark_rejected` entries on other branches are useful signals: the user weighed and dropped them.
+   - **Item with `action == "next"`** → user picked one of your branches. Read `chosen_branch_label` (not the id).
    - **Item with `action == "other"`** → user typed free text. `note` carries the text. Read it like a /grill-me chat reply — it may override branches or redirect the question.
    - **Item with `action == "stop"`** → user clicked **wrap up** in the toolbar — they want a verdict card next, NOT a hard stop. Call `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<this node's id>, parent_branch_id=<chosen branch id from this node, if any>)`. Then `wait_for_action` on the returned summary node id. See "Ending" below for the verdict-action handlers. Do NOT call `end_session`.
-   - **Item with `action == "chat"`** → user is pausing the grill to chat about this node in Claude Code. Server has marked the session paused AND locked this node (no more clicks). `chosen_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`** — the session is alive, paused. Continue the conversation in plain chat. When the user signals "back to grilling", call `resume_session_tool(session_id)` and push a NEW `present_branches` (the original node is locked — you cannot keep grilling on it).
-   - **Item with `action == "mark_rejected"` / `"unmark"`** → tagging signal only. The branch label tells you which option the user weighed. Useful context, not an answer.
+   - **Item with `action == "chat"`** → user paused the grill to chat about this node in CC. Server marked the session paused and locked this node. `chosen_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`**. Continue the conversation in plain chat. When the user signals "back to grilling", call `apply_chat_result(...)` (see "Chat as decision" below) — that lands the chat outcome on the node, unlocks it, and resumes the session in one shot.
    - **Item with `action == "stop_here"`** → summary verdict: user approved, no further action. Server has already ended the session. Point user at the export. Do NOT call `end_session`.
    - **Item with `action == "create_plan"`** → summary verdict: user approved, wants a detailed implementation plan first (not code). `chain_markdown` carries the full chosen-path recap. Use it to draft a plan (markdown doc, ordered task list, file-level breakdown). Server has already ended the session. Do NOT call `end_session`.
    - **Item with `action == "implement_now"`** → summary verdict: user approved, wants code now. `chain_markdown` carries the full chosen-path recap. Start coding immediately based on the decisions. Server has already ended the session. Do NOT call `end_session`.
@@ -70,8 +69,8 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 - **Explore the codebase before asking** when a question can be answered by reading code (file paths, existing patterns, type definitions). Use `Read` / `Glob` / `Grep` first; let what you find shape the branch rationales, not replace asking.
 - **Branch labels are short** (≤ 6 words). Rationale carries the detail.
 - **Take "other" answers literally.** If the user types "actually let's stop and look at X instead", do that. Don't paraphrase or pick the closest branch. The whole point of the text input is to let the user override your option set.
-- **Respect rejection.** If the user marks a branch `rejected` (a tagging-only action) and answers a different way, do not re-surface the rejected branch as a child later.
-- **On `chat`: NEVER call `end_session`.** Chat pauses the session, it does not end it. The chatted node is locked (cannot be answered further). Continue in plain chat; when ready to keep grilling, call `resume_session_tool(session_id)` then push a NEW `present_branches` — do not try to re-poll the locked node.
+- **Respect chat-removed branches.** Read `node.removed_branch_ids` from the snapshot before composing follow-up branches. Do not re-surface a branch that chat removed.
+- **On `chat`: NEVER call `end_session`.** Chat pauses the session, it does not end it. The chatted node is locked (cannot be answered further until apply_chat_result lands). Continue in plain chat; when ready to keep grilling, call `apply_chat_result(...)` — see "Chat as decision".
 - **On `stop` (toolbar wrap-up): NEVER call `end_session` directly.** Always call `present_summary` first — the user gets a verdict card with four options (`stop_here` / `create_plan` / `implement_now` / `continue_grill`) and the session ends only after they pick a terminal verdict (server-side, automatically).
 - **For summary verdicts (`stop_here` / `create_plan` / `implement_now`): NEVER call `end_session`.** The server has already ended the session. Calling it again is harmless but pointless. `end_session` remains only as an escape hatch for crashes / explicit bailout.
 
@@ -82,6 +81,45 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 ## Path context
 
 When calling `present_branches` for a child, pass `parent_node_id` and `parent_branch_id`. The server uses these to wire the tree on the canvas. Carry the path in your own reasoning too — every question is conditioned on the chain of answers above it.
+
+## Chat as decision
+
+When the user clicks **chat** on a node (or a specific branch), the server pauses the session and locks the node. You then have a normal chat with the user in CC. When they signal "resume" / "back to grilling" / "ok keep going", you must land the chat by calling `apply_chat_result` exactly once. That unlocks the node, mutates it per the chat outcome, and flips the session back to active.
+
+Pick **one outcome** based on what actually happened in the chat:
+
+- **`refine`** — the original question still stands, but the chat sharpened the option set. Pass `ops` with `adds` (new branches the chat surfaced) and/or `removes` (branch ids the chat killed). Existing branches NOT in `ops.adds`/`ops.removes` stay untouched. To "edit" a branch, remove the old + add a new one — never silently rewrite. After apply, the node is unlocked; user picks one of the (now updated) branches.
+- **`redirect`** — the chat revealed the question is wrong. Original node gets marked `redirected` (greyed on canvas). The response includes `redirect_branch_id` — a synthesized branch on the chatted node. You MUST pass it as `parent_branch_id` on the next `present_branches` call so the post-redirect question wires correctly on canvas. `parent_node_id` = the chatted node id.
+- **`resolve`** — the chat itself produced the answer; no further branching needed. Server synthesizes a chosen branch on the node (label = first 60 chars of your chat_summary). Future drilling chains off that synthetic branch.
+
+`chat_id` is a UUID YOU generate per chat (e.g. `uuid.uuid4().hex`). Used for idempotency: if CC's transport retries the call, the server returns success without re-mutating. **Use the same chat_id on retry; never roll a new one for the same chat.**
+
+`chat_summary` is a 2–4 sentence condensed narrative of what was discussed and why this outcome. The full transcript stays in CC chat history; the server only stores this summary as a banner on the node.
+
+All-or-nothing for refine: any unknown id in `ops.removes` returns an error and NOTHING applies. Re-read the snapshot, fix the ids, retry with the SAME chat_id.
+
+Tool call shape:
+
+```
+apply_chat_result(
+  session_id="ab12cd34",
+  node_id="n3",
+  chat_id="<uuid you generated when chat fired>",
+  chat_summary="Discussed Stripe vs Paddle. User concerned about EU VAT handling — Paddle wins on that. Removed 'roll your own' as out of scope.",
+  outcome="refine",
+  ops={
+    "adds": [
+      {"label": "Paddle", "rationale": "Handles VAT/sales tax automatically", "is_recommended": true}
+    ],
+    "removes": ["b_roll_own_id"]
+  }
+)
+→ {ok: true, node_id: "n3"}
+```
+
+For `redirect` / `resolve`, omit `ops` (or pass `{}`).
+
+After apply_chat_result returns ok, the node is unlocked and the session is active. Push the next `present_branches` whenever the design tells you to (drill, sideways, or a redirect-driven new question).
 
 ## Ending
 
@@ -123,10 +161,9 @@ wait_for_action(session_id="ab12cd34", node_id="n1")
 → {node_id: "n1", actions: []}        # transport timeout / pre-flush; keep polling
 wait_for_action(session_id="ab12cd34", node_id="n1")
 → {node_id: "n1", actions: [
-    {node_id: "n1", chosen_branch_id: "b1", chosen_branch_label: "Flat subscription", action: "mark_rejected"},
     {node_id: "n1", chosen_branch_id: "b2", chosen_branch_label: "Usage-based", action: "next"},
   ]}
-# user rejected "Flat" then picked "Usage-based" — drill into the dependent decision
+# user picked "Usage-based" — drill into the dependent decision
 present_branches(
   session_id="ab12cd34",
   parent_node_id="n1",

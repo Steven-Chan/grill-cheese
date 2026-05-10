@@ -10,6 +10,8 @@ from typing import Any, Optional
 from .schemas import (
     AskBranchesResult,
     Branch,
+    ChatBlock,
+    ChatOps,
     GuiAction,
     HookEvent,
     Node,
@@ -188,6 +190,25 @@ class Store:
         self._events.pop(node_id, None)
         self._flushed.discard(node_id)
 
+    def unlock_node(self, node_id: str) -> None:
+        """Unlock a flushed node so clicks can resume.
+
+        Used by apply_chat_result on refine: chat result mutates the node;
+        node must accept new clicks (pick / chat again / etc) afterwards.
+        Drops the committed batch since the next round of clicks belongs
+        to a fresh wait_for_action cycle.
+        """
+        timer = self._timers.pop(node_id, None)
+        if timer is not None:
+            timer.cancel()
+        self._actions.pop(node_id, None)
+        self._pending.pop(node_id, None)
+        self._flushed.discard(node_id)
+        # rotate event so old waiters who already returned do not re-fire
+        old = self._events.pop(node_id, None)
+        if old is not None and not old.is_set():
+            old.set()  # release any stragglers
+
     def get_status_event(self, sid: str) -> asyncio.Event:
         ev = self._status_events.get(sid)
         if ev is None:
@@ -243,8 +264,8 @@ class Store:
         """Mutate node state immediately + return action record for the buffer.
 
         Returns None on invalid input (no session, no node, missing required
-        fields, locked node). Mutations apply right away regardless of when
-        the buffer flushes, so the GUI feels responsive.
+        fields, locked node, picking a removed branch). Mutations apply right
+        away regardless of when the buffer flushes, so the GUI feels responsive.
         """
         s = self.sessions.get(action.session_id)
         if not s:
@@ -286,9 +307,9 @@ class Store:
                 label="continue",
                 rationale="",
                 is_recommended=False,
-                state="chosen",
             )
             node.branches.append(cont)
+            node.chosen_branch_id = cont.id
             return AskBranchesResult(
                 node_id=action.node_id,
                 chosen_branch_id=cont.id,
@@ -297,34 +318,18 @@ class Store:
                 action="continue_grill",
             )
 
-        if action.action in ("mark_rejected", "unmark") and action.branch_id:
-            chosen = next(
-                (b for b in node.branches if b.id == action.branch_id), None
-            )
-            if chosen is None:
-                return None
-            chosen.state = (
-                "rejected" if action.action == "mark_rejected" else "considered"
-            )
-            return AskBranchesResult(
-                node_id=action.node_id,
-                chosen_branch_id=chosen.id,
-                chosen_branch_label=chosen.label,
-                action=action.action,
-            )
-
         if action.action == "next":
             if not action.branch_id:
                 return None
+            # cannot pick a chat-removed branch
+            if action.branch_id in node.removed_branch_ids:
+                return None
             chosen = next(
                 (b for b in node.branches if b.id == action.branch_id), None
             )
             if chosen is None:
                 return None
-            for other in node.branches:
-                if other.state == "chosen" and other.id != chosen.id:
-                    other.state = "considered"
-            chosen.state = "chosen"
+            node.chosen_branch_id = chosen.id
             return AskBranchesResult(
                 node_id=action.node_id,
                 chosen_branch_id=chosen.id,
@@ -346,6 +351,8 @@ class Store:
         if action.action == "chat":
             chosen = None
             if action.branch_id:
+                if action.branch_id in node.removed_branch_ids:
+                    return None  # cannot chat about a removed branch
                 chosen = next(
                     (b for b in node.branches if b.id == action.branch_id), None
                 )
@@ -359,12 +366,152 @@ class Store:
             )
         return None
 
+    # ---- apply_chat_result (chat outcome -> node mutation) ----
+    def apply_chat_result(
+        self,
+        sid: str,
+        node_id: str,
+        chat_id: str,
+        chat_summary: str,
+        outcome: str,
+        ops: Optional[ChatOps],
+    ) -> tuple[Optional[Node], Optional[str], Optional[str]]:
+        """Apply a chat outcome to the chatted node.
+
+        Returns (node, redirect_branch_id, err).
+          - err is None on success or a short error string.
+          - redirect_branch_id is set ONLY for the redirect outcome — it's the
+            synthesized 'redirect' branch the next present_branches must use
+            as parent_branch_id so the tree stays connected on canvas + in
+            chain_markdown/export walks.
+
+        On idempotent replay (same chat_id already applied), returns the cached
+        node + (the matching ChatBlock's branch_id if outcome was redirect)
+        + None err.
+
+        All-or-nothing for refine: any invalid branch ref -> err, no partial
+        apply. Outcome-specific mutations:
+          - refine:   ops.removes ids -> node.removed_branch_ids; ops.adds
+                      appended to node.branches.
+          - redirect: node.redirected = True. Synthesize a 'redirect' branch
+                      with first 60 chars of summary as label. Return its id.
+          - resolve:  synthesize a chosen branch (label = first 60 chars of
+                      summary) and set chosen_branch_id.
+
+        On success: appends ChatBlock, unlocks node for refine/resolve,
+        resumes session (status -> active).
+        """
+        s = self.sessions.get(sid)
+        if not s:
+            return None, None, "no such session"
+        node = s.nodes.get(node_id)
+        if not node:
+            return None, None, "no such node"
+        if outcome not in ("refine", "redirect", "resolve"):
+            return None, None, f"bad outcome: {outcome}"
+
+        # idempotency: if chat_id already applied, return cached node unchanged.
+        # For redirect, also re-emit the synthesized branch_id so retries get
+        # the same parent_branch_id to wire children with.
+        for existing in node.chats:
+            if existing.chat_id == chat_id:
+                cached_redirect_bid = None
+                if existing.outcome == "redirect":
+                    # find the redirect branch — it's the most recently appended
+                    # branch with rationale=='redirected via chat'. Robust enough
+                    # for our purposes (one redirect per chat).
+                    for b in reversed(node.branches):
+                        if b.rationale == "redirected via chat":
+                            cached_redirect_bid = b.id
+                            break
+                return node, cached_redirect_bid, None
+
+        # validate ops on refine before any mutation (all-or-nothing)
+        if outcome == "refine":
+            ops = ops or ChatOps()
+            existing_ids = {b.id for b in node.branches}
+            for rid in ops.removes:
+                if rid not in existing_ids:
+                    return None, None, f"unknown branch id in removes: {rid}"
+            # generate fresh ids for adds; ensure no clash with existing
+            for add in ops.adds:
+                if not add.id:
+                    add.id = uuid.uuid4().hex[:8]
+                if add.id in existing_ids:
+                    return None, None, f"add branch id collides: {add.id}"
+                existing_ids.add(add.id)
+
+        # apply
+        redirect_branch_id: Optional[str] = None
+        if outcome == "refine":
+            assert ops is not None
+            for rid in ops.removes:
+                if rid not in node.removed_branch_ids:
+                    node.removed_branch_ids.append(rid)
+            node.branches.extend(ops.adds)
+        elif outcome == "redirect":
+            node.redirected = True
+            # synthesize a 'redirect' branch so the post-redirect question node
+            # can wire its parent_branch_id to it — keeps the tree connected
+            # on canvas + in chain_markdown/export walks. Caller (the MCP tool)
+            # returns this id so Claude can pass it to next present_branches.
+            label = chat_summary.strip().splitlines()[0] if chat_summary else "redirect"
+            label = (label[:60] or "redirect")
+            redir = Branch(
+                id=uuid.uuid4().hex[:8],
+                label=label,
+                rationale="redirected via chat",
+                is_recommended=False,
+            )
+            node.branches.append(redir)
+            redirect_branch_id = redir.id
+            # do NOT set chosen_branch_id — chosen means "user picked"; redirect
+            # means "abandoned via chat". Tree wiring uses the synthesized
+            # branch's child_node_id once a follow-up node hangs off it.
+        elif outcome == "resolve":
+            label = chat_summary.strip().splitlines()[0] if chat_summary else "resolved via chat"
+            label = label[:60] or "resolved via chat"
+            resolved = Branch(
+                id=uuid.uuid4().hex[:8],
+                label=label,
+                rationale="resolved via chat",
+                is_recommended=True,
+            )
+            node.branches.append(resolved)
+            node.chosen_branch_id = resolved.id
+
+        # log the chat
+        node.chats.append(
+            ChatBlock(
+                chat_id=chat_id,
+                summary=chat_summary,
+                outcome=outcome,  # type: ignore[arg-type]
+                applied_at=time.time(),
+                branch_id=s.paused_branch_id,
+            )
+        )
+
+        # unlock node (refine/resolve) so user can interact again. redirect
+        # leaves the node read-only — user moves on to the new question.
+        if outcome in ("refine", "resolve"):
+            self.unlock_node(node_id)
+
+        # flip session back to active
+        if s.status == "paused":
+            s.status = "active"
+            s.paused_node_id = None
+            s.paused_branch_id = None
+            self._bump_status_event(sid)
+
+        return node, redirect_branch_id, None
+
     # ---- chain markdown (chosen-path only) ----
     def _build_chain_md(self, session: Session) -> str:
         """Render the chosen-path chain as markdown for create_plan / implement_now.
 
-        Walks from root following only `chosen` branches. Includes brief at top.
-        Empty branches/notes still emit something useful.
+        Walks from root following chosen branches (Node.chosen_branch_id).
+        For redirected nodes, follows the parent-branch wiring of the next
+        node since the chatted node has no chosen branch.
         """
         lines = [f"# Grill Session — {session.id}", "", f"**Brief:** {session.brief}", ""]
         if not session.root_node_id:
@@ -384,21 +531,20 @@ class Store:
                     lines.append("")
                     lines.append(n.summary_body)
                 lines.append("")
-                # don't break — follow continuation branch (continue_grill
-                # makes summary non-terminal). Walks until truly terminal.
-                chosen = next(
-                    (b for b in n.branches if b.state == "chosen"), None
-                )
+                chosen = _chosen_branch(n)
                 node_id = chosen.child_node_id if chosen else None
                 depth += 1
                 continue
             h = "#" * (depth + 2)
-            lines.append(f"{h} {n.question}")
+            tag = " *(redirected via chat)*" if n.redirected else ""
+            lines.append(f"{h} {n.question}{tag}")
             if n.reasoning:
                 lines.append(f"> {n.reasoning}")
-            chosen = next(
-                (b for b in n.branches if b.state == "chosen"), None
-            )
+            # inline chat callouts (one per applied chat)
+            for c in n.chats:
+                lines.append("")
+                lines.append(f"> **Chat ({c.outcome}):** {c.summary}")
+            chosen = _chosen_branch(n)
             if chosen:
                 lines.append("")
                 lines.append(f"**Chose:** {chosen.label}")
@@ -408,7 +554,16 @@ class Store:
                 lines.append("")
                 lines.append(f"**Note:** {n.user_note}")
             lines.append("")
-            node_id = chosen.child_node_id if chosen else None
+            # advance: prefer chosen branch's child; fall back to first child
+            # that exists (handles redirect — chatted node has no chosen, but
+            # one of its branches still has a child_node_id).
+            next_id = chosen.child_node_id if chosen else None
+            if next_id is None:
+                for b in n.branches:
+                    if b.child_node_id:
+                        next_id = b.child_node_id
+                        break
+            node_id = next_id
             depth += 1
         return "\n".join(lines)
 
@@ -418,6 +573,13 @@ class Store:
         if not sid or sid not in self.sessions:
             return
         s = self.sessions[sid]
+        # tag chat-time tool calls so GUI can render them distinctly
+        if (
+            s.status == "paused"
+            and ev.grill_node_id
+            and ev.grill_node_id == s.paused_node_id
+        ):
+            ev.chat_tag = True
         node_id = ev.grill_node_id or "_unbound"
         s.hook_traces.setdefault(node_id, []).append(ev.model_dump())
 
@@ -504,6 +666,12 @@ class Store:
                 q.put_nowait(ev)
             except asyncio.QueueFull:
                 pass
+
+
+def _chosen_branch(n: Node) -> Optional[Branch]:
+    if not n.chosen_branch_id:
+        return None
+    return next((b for b in n.branches if b.id == n.chosen_branch_id), None)
 
 
 store = Store()

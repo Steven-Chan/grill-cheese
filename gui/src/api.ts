@@ -1,8 +1,8 @@
+import { useStore } from "./store";
+
 export type ActionKind =
   | "next"
   | "other"
-  | "mark_rejected"
-  | "unmark"
   | "stop"
   | "chat"
   | "stop_here"
@@ -22,6 +22,26 @@ export async function postAction(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ session_id, node_id, action, branch_id, note }),
   });
+  if (res.status === 409) {
+    let body: { err?: string } = {};
+    try {
+      body = await res.json();
+    } catch {
+      // ignore parse failure; show generic message
+    }
+    if (body.err === "branch_removed") {
+      useStore.getState().setToast(
+        "This option was removed in a recent chat."
+      );
+    } else if (body.err === "node locked") {
+      useStore.getState().setToast(
+        "This question is already settled."
+      );
+    } else {
+      useStore.getState().setToast(`Action rejected: ${body.err ?? res.status}`);
+    }
+    return;
+  }
   if (!res.ok) throw new Error(`action ${action} failed: ${res.status}`);
 }
 

@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .schemas import (
     AskBranchesResult,
     Branch,
+    ChatOps,
     WaitForActionResult,
 )
 from .state import store
@@ -202,21 +203,22 @@ async def wait_for_action(
 
     - `actions == []`  -> TIMEOUT / no flush yet. RE-POLL with the same
                           node_id. Do NOT call present_branches again.
-    - `actions == [...]`-> flushed batch. Process the list as a narrative:
-                           tagging clicks (mark_rejected, unmark) interleaved
-                           with one (or more) terminal clicks at end. The
-                           last terminal-class action is the user's final word;
-                           earlier entries are 'changed mind' signals.
+    - `actions == [...]`-> flushed batch. Usually a single terminal click;
+                           may carry earlier 'other' / chat events buffered
+                           in the same idle window. The last terminal-class
+                           action is the user's final word.
                            Idempotent — subsequent polls return the same list.
                            Node is now LOCKED — further user clicks rejected.
 
     Per-item action values: "next" | "other" | "stop" | "chat" |
-    "mark_rejected" | "unmark" | "stop_here" | "create_plan" |
-    "implement_now" | "continue_grill".
+    "stop_here" | "create_plan" | "implement_now" | "continue_grill".
 
-    For chat: server has marked session paused. Original node is locked, so
-    push a NEW node (or call `end_session`) when ready to continue. Use
-    `resume_session_tool` to flip status back to active before pushing.
+    For chat: server has marked session paused. Original node is locked.
+    When user signals "back to grilling", call `apply_chat_result` with the
+    chat outcome (refine/redirect/resolve), summary, and ops (for refine).
+    Server unlocks the node + resumes session as part of apply. Old explicit
+    `resume_session_tool` is kept as an escape hatch but apply_chat_result
+    is the standard path.
 
     Summary-node verdicts (stop_here / create_plan / implement_now) AUTO-END
     the session server-side. Do NOT call end_session for those. The
@@ -262,7 +264,7 @@ async def record_implicit_decision(
     Surfaced as a flagged node in the GUI's Implicit Decisions lane.
     Non-blocking. Use sparingly — every implicit decision is a missed grill opportunity.
     """
-    branch = Branch(label=decision, rationale=rationale, is_recommended=True, state="chosen")
+    branch = Branch(label=decision, rationale=rationale, is_recommended=True)
     node = store.add_node(
         sid=session_id,
         question=f"(implicit) {decision}",
@@ -273,6 +275,8 @@ async def record_implicit_decision(
         depth=0,
         implicit=True,
     )
+    # mark the synthetic branch chosen so chosen-path walk picks it up
+    node.chosen_branch_id = branch.id
     await store.broadcast(
         session_id,
         {
@@ -310,6 +314,100 @@ async def resume_session_tool(session_id: str) -> dict:
     )
     await store.broadcast_session_list()
     return {"ok": True}
+
+
+@mcp.tool()
+async def apply_chat_result(
+    session_id: str,
+    node_id: str,
+    chat_id: str,
+    chat_summary: str,
+    outcome: str,
+    ops: Optional[dict] = None,
+) -> dict:
+    """Land a chat outcome on the chatted node and resume the session.
+
+    Call this when the user signals "back to grilling" / "resume" in CC chat
+    after an earlier `chat` action paused the session. Picks ONE outcome
+    from the chat narrative and bakes it into the node:
+
+      - refine   : node stays; ops mutate branches (adds, removes). Original
+                   branches NOT touched unless explicitly removed. removes
+                   are SOFT — branches stay in node.branches but are tagged
+                   in node.removed_branch_ids and rendered greyed/struck.
+                   To "edit" a branch, remove the old + add a new one.
+      - redirect : node abandoned. node.redirected = True. Push a fresh
+                   present_branches AFTER this call for the new question.
+      - resolve  : chat itself is the answer. Server synthesizes a chosen
+                   branch (label = first 60 chars of summary). Future
+                   children chain off this synthetic branch.
+
+    `chat_id` is a UUID YOU generate for this chat (e.g. uuid.uuid4().hex).
+    Used for idempotency: if the same chat_id is re-applied (e.g. CC retried
+    on transport failure), the server returns success without re-mutating.
+
+    `ops` shape (refine only): {"adds": [{"label","rationale","is_recommended"}],
+    "removes": ["branch_id", ...]}. All-or-nothing: any unknown branch_id in
+    `removes` returns an error and NO mutation lands. Submit a fresh snapshot
+    + retry.
+
+    Returns {ok, node_id, err?, redirect_branch_id?}. On err: nothing
+    applied; resubmit. On success: node_updated SSE broadcast carries the
+    mutated node. Server has resumed the session AND unlocked the node
+    (refine/resolve) so the user can keep clicking.
+
+    For redirect: response includes `redirect_branch_id` — the synthesized
+    branch on the chatted node. You MUST pass this as `parent_branch_id`
+    on the next `present_branches` call. Without it the post-redirect
+    question would render disconnected from the chatted node.
+    """
+    if outcome not in ("refine", "redirect", "resolve"):
+        return {"ok": False, "err": f"bad outcome: {outcome}"}
+    parsed_ops: Optional[ChatOps] = None
+    if outcome == "refine":
+        try:
+            parsed_ops = ChatOps.model_validate(ops or {})
+        except Exception as e:
+            return {"ok": False, "err": f"bad ops: {e}"}
+
+    node, redirect_branch_id, err = store.apply_chat_result(
+        sid=session_id,
+        node_id=node_id,
+        chat_id=chat_id,
+        chat_summary=chat_summary,
+        outcome=outcome,
+        ops=parsed_ops,
+    )
+    if err is not None or node is None:
+        return {"ok": False, "err": err or "apply failed"}
+
+    # broadcast: node payload is the canonical post-mutation state. GUI's
+    # existing replace-node-by-id (node_updated handler) renders it.
+    await store.broadcast(
+        session_id,
+        {
+            "type": "node_updated",
+            "session_id": session_id,
+            "payload": node.model_dump(),
+        },
+    )
+    # session is now active again — broadcast resume so banner clears
+    await store.broadcast(
+        session_id,
+        {
+            "type": "session_resumed",
+            "session_id": session_id,
+            "payload": {},
+        },
+    )
+    await store.broadcast_session_list()
+    result: dict = {"ok": True, "node_id": node_id}
+    if redirect_branch_id:
+        # Caller MUST pass this as parent_branch_id on the next
+        # present_branches call so the post-redirect question wires to
+        # the chatted node on canvas + chain walks.
+        result["redirect_branch_id"] = redirect_branch_id
+    return result
 
 
 @mcp.tool()
