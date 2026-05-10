@@ -52,10 +52,10 @@ cp -r skill/grill-cheese ~/.claude/skills/
 # merge the mcpServers block from claude-mcp-config.example.json into ~/.claude.json
 ```
 
-Then in any project:
+Then in any project (Claude Code ≥ 2.1.80 — channels flag required until the shim is plugin-published):
 
 ```bash
-claude
+claude --dangerously-load-development-channels server:grill-cheese
 > /grill-cheese my plan is to add billing to my SaaS using Stripe
 ```
 
