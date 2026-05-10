@@ -40,6 +40,11 @@ function CanvasInner() {
   // (which mutate `nodes` → `rfNodes` recomputes → effect re-runs while
   // pendingNodeId is unchanged). Focus must fire once per new pending node.
   const lastFocusedId = useRef<string | null>(null);
+  // swallow next onMoveStart — programmatic setCenter triggers it too in xyflow,
+  // which would falsely flip userPanned=true and light up the active-state FAB.
+  const programmaticMove = useRef(false);
+  // safety timer: clears flag if onMoveStart never fires (no-op setCenter).
+  const programmaticTimer = useRef<number | null>(null);
 
   const { rfNodes, rfEdges } = useMemo(() => {
     const visible = Object.values(nodes);
@@ -90,11 +95,36 @@ function CanvasInner() {
     const w = node.measured?.width ?? NODE_W;
     const h = node.measured?.height ?? NODE_H;
     lastFocusedId.current = pendingNodeId;
+    armProgrammaticMove();
     rf.setCenter(node.position.x + w / 2, node.position.y + h / 2, {
       duration: FOCUS_DURATION_MS,
       zoom: rf.getZoom(),
     });
   }, [pendingNodeId, nodesInitialized, rf]);
+
+  // clear pending timer on unmount — stale timers across remounts would
+  // reset programmaticMove at the wrong time and swallow a real user pan.
+  useEffect(() => {
+    return () => {
+      if (programmaticTimer.current !== null) {
+        window.clearTimeout(programmaticTimer.current);
+        programmaticTimer.current = null;
+      }
+    };
+  }, []);
+
+  // arm flag + safety timeout so a no-op setCenter (already at target, or
+  // coalesced w/ rapid back-to-back calls) doesn't leave it stuck true.
+  const armProgrammaticMove = () => {
+    programmaticMove.current = true;
+    if (programmaticTimer.current !== null) {
+      window.clearTimeout(programmaticTimer.current);
+    }
+    programmaticTimer.current = window.setTimeout(() => {
+      programmaticMove.current = false;
+      programmaticTimer.current = null;
+    }, FOCUS_DURATION_MS + 50);
+  };
 
   const jumpToPending = () => {
     if (!pendingNodeId) return;
@@ -103,16 +133,29 @@ function CanvasInner() {
     const w = node.measured?.width ?? NODE_W;
     const h = node.measured?.height ?? NODE_H;
     setUserPanned(false);
+    armProgrammaticMove();
     rf.setCenter(node.position.x + w / 2, node.position.y + h / 2, {
       duration: FOCUS_DURATION_MS,
       zoom: rf.getZoom(),
     });
   };
 
-  // onMoveStart fires only on user-initiated pan/zoom (not programmatic setCenter).
-  const handleMoveStart = () => setUserPanned(true);
+  // onMoveStart fires for programmatic setCenter too — swallow that one
+  // via programmaticMove ref so userPanned only flips on real user gestures.
+  const handleMoveStart = () => {
+    if (programmaticMove.current) {
+      programmaticMove.current = false;
+      if (programmaticTimer.current !== null) {
+        window.clearTimeout(programmaticTimer.current);
+        programmaticTimer.current = null;
+      }
+      return;
+    }
+    setUserPanned(true);
+  };
 
-  const showJump = pendingNodeId !== null && userPanned;
+  const showJump = pendingNodeId !== null;
+  const isActive = userPanned;
 
   return (
     <ReactFlow
@@ -128,11 +171,30 @@ function CanvasInner() {
       <Controls />
       {showJump && (
         <Panel position="top-right">
-          <button className="gc-jump-btn" onClick={jumpToPending}>
-            ↩ jump to new question
+          <button
+            className={`gc-jump-btn${isActive ? " active" : ""}`}
+            onClick={jumpToPending}
+            aria-label="Recenter on current question"
+            title="Recenter on current question"
+          >
+            <RecenterIcon />
           </button>
         </Panel>
       )}
     </ReactFlow>
+  );
+}
+
+// Material `my_location` glyph — crosshair with center dot.
+function RecenterIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="7" />
+      <line x1="12" y1="2" x2="12" y2="5" />
+      <line x1="12" y1="19" x2="12" y2="22" />
+      <line x1="2" y1="12" x2="5" y2="12" />
+      <line x1="19" y1="12" x2="22" y2="12" />
+    </svg>
   );
 }
