@@ -12,6 +12,7 @@ from .schemas import (
     ChatOps,
 )
 from .state import store
+from .telemetry import log_push
 
 TITLE_MAX = 80
 
@@ -127,6 +128,7 @@ async def present_branches(
     await _broadcast_parent_update(session_id, parent_node_id)
     # node_added flips has_pending=true for this session
     await store.broadcast_session_list()
+    log_push(session_id, node.id, "present_branches")
     return {"node_id": node.id, "instruction": END_TURN_INSTRUCTION}
 
 
@@ -210,6 +212,7 @@ async def present_summary(
     )
     await _broadcast_parent_update(session_id, parent_node_id)
     await store.broadcast_session_list()
+    log_push(session_id, node.id, "present_summary")
     return {"node_id": node.id, "instruction": END_TURN_INSTRUCTION}
 
 

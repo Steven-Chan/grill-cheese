@@ -153,6 +153,17 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
         _log(f"emitted channel notif session={session_id} node={node_id} seq={seq}")
     except Exception as e:
         _log(f"channel emit err: {e!r}")
+        return
+    # Telemetry round-trip — best-effort. Failure must not block emit path.
+    if isinstance(seq, int) and session_id and node_id:
+        try:
+            client = await _http()
+            await client.post(
+                "/internal/telemetry/notify",
+                json={"session_id": session_id, "node_id": node_id, "seq": seq},
+            )
+        except Exception:
+            pass
 
 
 async def _sse_subscriber() -> None:
