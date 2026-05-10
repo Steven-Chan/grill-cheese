@@ -76,7 +76,7 @@ export function SummaryNode({ data }: NodeProps) {
 
   return (
     <div className={`gc-summary-node ${isPending && !committed ? "pending" : ""} ${committed ? "committed" : ""}`}>
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Left} />
       <div className="gc-summary-head">
         <span className="gc-node-tag">summary</span>
         {isPending && !committed && <span className="gc-node-tag pulse">awaiting verdict</span>}
@@ -121,9 +121,9 @@ export function SummaryNode({ data }: NodeProps) {
       {contBranch && (
         <Handle
           type="source"
-          position={Position.Bottom}
+          position={Position.Right}
           id={contBranch.id}
-          style={{ left: "50%" }}
+          style={{ top: "50%", right: -6 }}
         />
       )}
     </div>

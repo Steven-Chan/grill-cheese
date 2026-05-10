@@ -4,11 +4,10 @@ import type { Edge, Node } from "@xyflow/react";
 export const NODE_W = 360;
 export const NODE_H = 220;
 export const SUMMARY_W = 480;
-// dagre needs a fixed estimate; summary body is auto-height in DOM. Bumped
-// to 720 so that even multi-paragraph markdown + 4 buttons + textarea (often
-// 540–620px actual) doesn't overlap children. Very long bodies may still
-// overlap — that's a dagre limitation, mitigate by tightening summary text.
-export const SUMMARY_H = 720;
+// First-paint fallback before xyflow measures real DOM. Canvas feeds
+// measured dims into nodeSizes once available, so this only matters for
+// the first frame after a node mounts.
+export const SUMMARY_H = 620;
 
 export interface NodeSize {
   w: number;
@@ -21,7 +20,7 @@ export function layoutTree(
   nodeSizes?: Record<string, NodeSize>,
 ): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir: "TB", nodesep: 60, ranksep: 100, marginx: 40, marginy: 40 });
+  g.setGraph({ rankdir: "LR", nodesep: 40, ranksep: 140, marginx: 40, marginy: 40 });
   g.setDefaultEdgeLabel(() => ({}));
   for (const n of nodes) {
     const sz = nodeSizes?.[n.id] ?? { w: NODE_W, h: NODE_H };

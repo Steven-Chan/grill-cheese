@@ -47,7 +47,7 @@ export function DecisionNode({ data }: NodeProps) {
   const committed = !!node.committed;
   return (
     <div className={`gc-node ${node.implicit ? "implicit" : ""} ${isPending ? "pending" : ""} ${committed ? "committed" : ""}`}>
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Left} />
       <div className="gc-node-head">
         <span className="gc-node-depth">d{node.depth}</span>
         {node.implicit && <span className="gc-node-tag">implicit</span>}
@@ -157,9 +157,9 @@ function BranchRow({
     <div className={`gc-branch state-${branch.state} ${branch.is_recommended ? "recommended" : ""}`}>
       <Handle
         type="source"
-        position={Position.Bottom}
+        position={Position.Right}
         id={branch.id}
-        style={{ left: "auto", right: 12, bottom: -6 }}
+        style={{ top: "50%", right: -6 }}
       />
       <div className="gc-branch-row">
         <span className="gc-branch-glyph" title={branch.state}>

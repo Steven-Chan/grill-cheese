@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   Controls,
@@ -43,6 +43,13 @@ function CanvasInner() {
   // safety timer: clears flag if onMoveStart never fires (no-op setCenter).
   const programmaticTimer = useRef<number | null>(null);
 
+  // First-measure dynamic sizing. xyflow measures the rendered DOM and
+  // exposes dims via getInternalNode().measured. We rAF-poll once per
+  // new node id, snapshot into this map, then never re-measure — so
+  // mid-grill toggles (rationale, hooks list) don't reshuffle layout.
+  const [measuredSizes, setMeasuredSizes] = useState<Record<string, NodeSize>>({});
+  const measuringIds = useRef<Set<string>>(new Set());
+
   const { rfNodes, rfEdges } = useMemo(() => {
     const visible = Object.values(nodes);
     const flowNodes: Node[] = visible.map((n) => ({
@@ -77,13 +84,57 @@ function CanvasInner() {
     }
     const nodeSizes: Record<string, NodeSize> = {};
     for (const n of visible) {
-      nodeSizes[n.id] = n.kind === "summary"
+      const measured = measuredSizes[n.id];
+      nodeSizes[n.id] = measured ?? (n.kind === "summary"
         ? { w: SUMMARY_W, h: SUMMARY_H }
-        : { w: NODE_W, h: NODE_H };
+        : { w: NODE_W, h: NODE_H });
     }
     const laid = layoutTree(flowNodes, flowEdges, nodeSizes);
     return { rfNodes: laid.nodes, rfEdges: laid.edges };
-  }, [nodes, pendingNodeId]);
+  }, [nodes, pendingNodeId, measuredSizes]);
+
+  // Snapshot measured dims for any node we haven't sized yet. rAF-polls
+  // until xyflow's nodeLookup has measured.{w,h} populated, writes once,
+  // never again — re-layout fires exactly once per new node id.
+  // Cleanup cancels in-flight rAFs on unmount; functional setState reads
+  // fresh state so measuredSizes is intentionally NOT in deps (else every
+  // measurement write re-runs this effect).
+  useEffect(() => {
+    const pendingRafs = new Map<string, number>();
+    const ids = Object.keys(nodes);
+    for (const id of ids) {
+      if (measuringIds.current.has(id)) continue;
+      measuringIds.current.add(id);
+      const tryMeasure = () => {
+        const ni = rf.getInternalNode(id);
+        const w = ni?.measured?.width;
+        const h = ni?.measured?.height;
+        if (!ni || !w || !h) {
+          pendingRafs.set(id, requestAnimationFrame(tryMeasure));
+          return;
+        }
+        pendingRafs.delete(id);
+        setMeasuredSizes((prev) => {
+          if (prev[id]) {
+            measuringIds.current.delete(id);
+            return prev;
+          }
+          measuringIds.current.delete(id);
+          return { ...prev, [id]: { w, h } };
+        });
+      };
+      tryMeasure();
+    }
+    return () => {
+      // Cancel in-flight rAFs and release their ids from the dedupe set
+      // so a subsequent effect run can re-attempt measurement.
+      for (const [id, handle] of pendingRafs) {
+        cancelAnimationFrame(handle);
+        measuringIds.current.delete(id);
+      }
+      pendingRafs.clear();
+    };
+  }, [nodes, rf]);
 
   // auto-focus: pan to new pending node, keep current zoom.
   // fires once per new pendingNodeId. measured dims live on xyflow's internal
