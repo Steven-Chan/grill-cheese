@@ -31,6 +31,8 @@ TERMINAL_ACTIONS = {
 }
 # subset that auto-end the session server-side after flush
 SUMMARY_END_ACTIONS = {"stop_here", "create_plan", "implement_now"}
+# project slugs whose persisted sessions are skipped on startup rehydrate
+SKIP_LOAD_PROJECTS = {"smoke"}
 
 
 class Store:
@@ -77,29 +79,39 @@ class Store:
     async def _load_all(self) -> None:
         """Scan ~/.grill-cheese/project-*/sessions/*.json and rehydrate.
 
+        Skips dirs whose slug ∈ SKIP_LOAD_PROJECTS (e.g. smoke tests) so
+        throwaway sessions don't pollute the dev GUI on server start.
+
         Discards transient pending_actions per design: a crash mid-debounce
         forfeits not-yet-flushed clicks (visible node state already persisted).
         """
         root = self._data_root
         if not root.exists():
             return
-        for f in sorted(root.rglob("sessions/*.json")):
-            if f.name.endswith(".bad") or f.name.endswith(".tmp"):
+        for proj_dir in sorted(root.glob("project-*")):
+            if not proj_dir.is_dir():
                 continue
-            try:
-                raw = f.read_text(encoding="utf-8")
-                s = Session.model_validate_json(raw)
-            except Exception:
-                logger.exception("corrupt session file %s — renaming .bad", f)
+            slug = proj_dir.name[len("project-"):]
+            if slug in SKIP_LOAD_PROJECTS:
+                logger.info("skipping load of project dir %s", proj_dir.name)
+                continue
+            for f in sorted(proj_dir.glob("sessions/*.json")):
+                if f.name.endswith(".bad") or f.name.endswith(".tmp"):
+                    continue
                 try:
-                    f.rename(f.with_suffix(".json.bad"))
+                    raw = f.read_text(encoding="utf-8")
+                    s = Session.model_validate_json(raw)
                 except Exception:
-                    pass
-                continue
-            for node in s.nodes.values():
-                node.pending_actions = []
-            self.sessions[s.id] = s
-            logger.info("rehydrated session %s (%s)", s.id, s.brief[:60])
+                    logger.exception("corrupt session file %s — renaming .bad", f)
+                    try:
+                        f.rename(f.with_suffix(".json.bad"))
+                    except Exception:
+                        pass
+                    continue
+                for node in s.nodes.values():
+                    node.pending_actions = []
+                self.sessions[s.id] = s
+                logger.info("rehydrated session %s (%s)", s.id, s.brief[:60])
 
     def _find_node(self, node_id: str) -> Optional[tuple[Session, Node]]:
         for s in self.sessions.values():
