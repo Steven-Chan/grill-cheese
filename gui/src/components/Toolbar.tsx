@@ -5,8 +5,6 @@ export function Toolbar() {
   const sid = useStore((s) => s.activeSessionId);
   const sessions = useStore((s) => s.sessions);
   const brief = useStore((s) => s.brief);
-  const frontierOnly = useStore((s) => s.frontierOnly);
-  const toggleFrontier = useStore((s) => s.toggleFrontier);
   const setActive = useStore((s) => s.setActive);
   const pendingNodeId = useStore((s) => s.pendingNodeId);
   const endedSummary = useStore((s) => s.endedSummary);
@@ -27,14 +25,6 @@ export function Toolbar() {
       </div>
       <div className="gc-brief">{brief || <em className="gc-dim">awaiting brief…</em>}</div>
       <div className="gc-actions">
-        <label className="gc-toggle">
-          <input
-            type="checkbox"
-            checked={frontierOnly}
-            onChange={toggleFrontier}
-          />
-          frontier only
-        </label>
         {sessions.length > 1 && (
           <select
             className="gc-select"

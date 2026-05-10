@@ -79,7 +79,7 @@ Per-session channel + global channel (for the index page that lists active sessi
 CC hook script (`scripts/install-hooks.sh` writes `~/.claude/grill-cheese/hook.js`) POSTs raw hook payload to `/hooks`. The grill-cheese skill is supposed to inject `_grill_node_id` / `_grill_session_id` into `tool_input` so server can attach the trace to the right decision node. Without those, traces land in `_unbound` bucket. Hook script has 1s stdin + 1s HTTP hard-kill — never blocks Claude.
 
 ### Frontend layout
-GUI is `gui/`: React 18 + xyflow + dagre + zustand. Frontier-only filter (default on) shows pending node + ancestors + immediate children + all implicit decisions; toggle off for full tree. State in `gui/src/store.ts`; SSE wiring in `gui/src/sse.ts`; layout math in `gui/src/layout.ts`.
+GUI is `gui/`: React 18 + xyflow + dagre + zustand. Canvas renders the full decision tree. State in `gui/src/store.ts`; SSE wiring in `gui/src/sse.ts`; layout math in `gui/src/layout.ts`.
 
 ## When editing
 

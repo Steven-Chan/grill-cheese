@@ -11,19 +11,15 @@ import "@xyflow/react/dist/style.css";
 import { useStore } from "../store";
 import { layoutTree } from "../layout";
 import { DecisionNode as DecisionNodeView } from "./DecisionNode";
-import type { DecisionNode as DNode } from "../types";
 
 const nodeTypes = { decision: DecisionNodeView };
 
 export function Canvas() {
   const nodes = useStore((s) => s.nodes);
   const pendingNodeId = useStore((s) => s.pendingNodeId);
-  const lastPendingNodeId = useStore((s) => s.lastPendingNodeId);
-  const frontierOnly = useStore((s) => s.frontierOnly);
 
   const { rfNodes, rfEdges } = useMemo(() => {
-    const anchor = pendingNodeId ?? lastPendingNodeId;
-    const visible = filterVisible(nodes, frontierOnly, anchor);
+    const visible = Object.values(nodes);
     const flowNodes: Node[] = visible.map((n) => ({
       id: n.id,
       type: "decision",
@@ -56,7 +52,7 @@ export function Canvas() {
     }
     const laid = layoutTree(flowNodes, flowEdges);
     return { rfNodes: laid.nodes, rfEdges: laid.edges };
-  }, [nodes, pendingNodeId, lastPendingNodeId, frontierOnly]);
+  }, [nodes, pendingNodeId]);
 
   return (
     <ReactFlow
@@ -71,31 +67,4 @@ export function Canvas() {
       <Controls />
     </ReactFlow>
   );
-}
-
-function filterVisible(
-  nodes: Record<string, DNode>,
-  frontierOnly: boolean,
-  anchorNodeId: string | null
-): DNode[] {
-  const all = Object.values(nodes);
-  if (!frontierOnly) return all;
-  // frontier = anchor + its ancestors + immediate children + implicit decisions.
-  // anchor = pendingNodeId if a node awaits, else lastPendingNodeId (last-touched).
-  if (!anchorNodeId) return all;
-  const keep = new Set<string>();
-  // ancestor chain
-  let cursor: string | null = anchorNodeId;
-  while (cursor) {
-    keep.add(cursor);
-    const n: DNode | undefined = nodes[cursor];
-    cursor = n?.parent_node_id ?? null;
-  }
-  // children of pending (none yet typically; but include for stability)
-  for (const n of all) {
-    if (n.parent_node_id && keep.has(n.parent_node_id)) keep.add(n.id);
-  }
-  // implicit decisions always shown
-  for (const n of all) if (n.implicit) keep.add(n.id);
-  return all.filter((n) => keep.has(n.id));
 }

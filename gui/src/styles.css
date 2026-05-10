@@ -77,15 +77,6 @@ body,
   align-items: center;
   gap: 12px;
 }
-.gc-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--gc-fg-dim);
-  user-select: none;
-  cursor: pointer;
-}
 .gc-select {
   background: var(--gc-bg-card);
   color: var(--gc-fg);
