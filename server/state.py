@@ -229,6 +229,9 @@ class Store:
         node.pending_actions = []
         node.committed_actions = pending
         node.is_flushed = True
+        # assign monotonic per-session seq for channel skip-detection
+        seq = s.next_seq
+        s.next_seq += 1
         self._persist(s)
         self.get_event(node_id).set()
         # broadcast committed event (timer callback is sync — schedule task)
@@ -242,6 +245,7 @@ class Store:
                         "session_id": session_id,
                         "payload": {
                             "node_id": node_id,
+                            "seq": seq,
                             "actions": [a.model_dump() for a in pending],
                         },
                     },

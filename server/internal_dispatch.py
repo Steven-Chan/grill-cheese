@@ -18,7 +18,6 @@ _TOOL_FUNCS = {
     "start_session": mcp_app.start_session,
     "present_branches": mcp_app.present_branches,
     "present_summary": mcp_app.present_summary,
-    "wait_for_action": mcp_app.wait_for_action,
     "record_implicit_decision": mcp_app.record_implicit_decision,
     "resume_session_tool": mcp_app.resume_session_tool,
     "apply_chat_result": mcp_app.apply_chat_result,

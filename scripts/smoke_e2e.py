@@ -1,10 +1,11 @@
 """In-process smoke for the buffered grill loop + chat-as-decision.
 
-Tests:
+Tests (channels-mode: wait_for_action removed; flush still drives the same
+event surface that the shim later bridges to notifications/claude/channel):
   1. present_branches returns immediately with node_id
-  2. wait_for_action times out cleanly when no clicks (returns empty actions)
-  3. terminal click flushes immediately → wait_for_action returns batch
-  4. wait_for_action is idempotent — re-poll returns same batch
+  2. unflushed node has no committed actions (parking on the per-node Event)
+  3. terminal click flushes immediately → committed batch present
+  4. flushed batch is idempotent on re-read
   5. flushed node is locked — further enqueue_action rejected
   6. apply_chat_result(refine): merges adds, soft-deletes removes, unlocks
   7. apply_chat_result idempotency: replay with same chat_id is no-op

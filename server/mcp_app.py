@@ -1,8 +1,6 @@
 """MCP tools exposed to Claude Code."""
 from __future__ import annotations
 
-import asyncio
-import json
 import time
 from typing import Optional
 
@@ -12,11 +10,20 @@ from .schemas import (
     AskBranchesResult,
     Branch,
     ChatOps,
-    WaitForActionResult,
 )
 from .state import store
 
 TITLE_MAX = 80
+
+# Instruction string returned from present_branches / present_summary so the
+# skill (and Claude) gets a fresh, in-tool reminder to end the turn instead
+# of polling. Channels deliver the user's action; no waiting needed here.
+END_TURN_INSTRUCTION = (
+    "TURN_OVER. Stop generating. Do NOT call any other tool. Do NOT "
+    "write more text. The grill-cheese channel will wake you when the "
+    "user clicks; on wake, parse the <channel source=\"grill-cheese\" ...> "
+    "block and act on its actions."
+)
 
 
 mcp = FastMCP("grill-cheese", json_response=True, streamable_http_path="/")
@@ -74,15 +81,14 @@ async def present_branches(
     depth: int = 0,
     implicit: bool = False,
 ) -> dict:
-    """Push a decision node to the GUI. Returns immediately with {node_id}.
-
-    Pair with wait_for_action(node_id) — long-poll loop — to get the user's
-    action. NEVER call this twice for the same logical question; if you need
-    to resume after a transport timeout, just call wait_for_action again on
-    the existing node_id.
+    """Push a decision node to the GUI. Returns immediately with {node_id, instruction}.
 
     Each branch is {label, rationale?, is_recommended?}. 2-4 branches.
     Mark exactly one branch is_recommended: true.
+
+    After this call, your turn MUST end. The `instruction` field in the result
+    spells it out — channels (notifications/claude/channel) will wake you with
+    the user's action; do not poll, do not generate more text.
     """
     branch_objs = [Branch(**b) for b in branches]
     # Pushing a node implicitly resumes a paused session — the user is back
@@ -121,7 +127,7 @@ async def present_branches(
     await _broadcast_parent_update(session_id, parent_node_id)
     # node_added flips has_pending=true for this session
     await store.broadcast_session_list()
-    return {"node_id": node.id}
+    return {"node_id": node.id, "instruction": END_TURN_INSTRUCTION}
 
 
 async def _broadcast_parent_update(session_id: str, parent_node_id: Optional[str]) -> None:
@@ -150,10 +156,11 @@ async def present_summary(
     parent_node_id: Optional[str] = None,
     parent_branch_id: Optional[str] = None,
 ) -> dict:
-    """Push a SUMMARY node (verdict card) to the GUI. Returns {node_id}.
+    """Push a SUMMARY node (verdict card) to the GUI. Returns {node_id, instruction}.
 
-    Symmetric to present_branches: returns instantly; pair with wait_for_action
-    long-poll. The user picks one of four verdict actions:
+    Symmetric to present_branches: returns instantly; channels deliver the user's
+    verdict action via notifications/claude/channel. The user picks one of four
+    verdict actions:
 
       - stop_here      -> approve, no follow-up signal. Server auto-ends.
       - create_plan    -> approve, write detailed implementation plan first.
@@ -203,74 +210,14 @@ async def present_summary(
     )
     await _broadcast_parent_update(session_id, parent_node_id)
     await store.broadcast_session_list()
-    return {"node_id": node.id}
+    return {"node_id": node.id, "instruction": END_TURN_INSTRUCTION}
 
 
-@mcp.tool()
-async def wait_for_action(
-    session_id: str,
-    node_id: str,
-    timeout_seconds: float = 50.0,
-) -> dict:
-    """Long-poll for the user's batched actions on a node.
-
-    Blocks up to timeout_seconds (kept under CC's MCP HTTP timeout ~60s).
-    Returns `{node_id, actions: [...]}` where each action item carries
-    `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action,
-    chain_markdown?}`.
-
-    Server buffers GUI clicks and flushes after a 750ms idle window OR
-    immediately when a terminal-class click lands.
-
-    - `actions == []`  -> TIMEOUT / no flush yet. RE-POLL with the same
-                          node_id. Do NOT call present_branches again.
-    - `actions == [...]`-> flushed batch. Usually a single terminal click;
-                           may carry earlier 'other' / chat events buffered
-                           in the same idle window. The last terminal-class
-                           action is the user's final word.
-                           Idempotent — subsequent polls return the same list.
-                           Node is now LOCKED — further user clicks rejected.
-
-    Per-item action values: "next" | "other" | "stop" | "chat" |
-    "stop_here" | "create_plan" | "implement_now" | "continue_grill".
-
-    For chat: server has marked session paused. Original node is locked.
-    When user signals "back to grilling", call `apply_chat_result` with the
-    chat outcome (refine/redirect/resolve), summary, and ops (for refine).
-    Server unlocks the node + resumes session as part of apply. Old explicit
-    `resume_session_tool` is kept as an escape hatch but apply_chat_result
-    is the standard path.
-
-    Summary-node verdicts (stop_here / create_plan / implement_now) AUTO-END
-    the session server-side. Do NOT call end_session for those. The
-    create_plan and implement_now actions also carry `chain_markdown` — the
-    full chosen-path recap as markdown — for downstream plan-write or coding.
-    """
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while True:
-        existing = store.get_actions(node_id)
-        if existing is not None:
-            return WaitForActionResult(
-                node_id=node_id, actions=existing
-            ).model_dump()
-
-        remaining = deadline - asyncio.get_event_loop().time()
-        if remaining <= 0:
-            return WaitForActionResult(node_id=node_id, actions=[]).model_dump()
-
-        node_event = store.get_event(node_id)
-        try:
-            await asyncio.wait_for(node_event.wait(), timeout=remaining)
-        except asyncio.TimeoutError:
-            return WaitForActionResult(node_id=node_id, actions=[]).model_dump()
-        # loop: re-check committed batch
-
-
-# NOTE: ask_branches was removed. It was a single-call wrapper around
-# present_branches + wait_for_action, but if CC's transport retried it after a
-# 60s timeout the wrapper would create a NEW node on every retry — the exact
-# duplicate-node bug we are trying to fix. Use present_branches +
-# wait_for_action explicitly. The skill enforces this pattern.
+# NOTE: wait_for_action removed — channels (notifications/claude/channel)
+# now deliver flushed action batches by waking Claude with a <channel> block.
+# See server/shim.py for the stdio bridge that emits them. ask_branches was
+# also removed earlier — single-call wrappers around push+wait re-create the
+# duplicate-node bug on transport retries.
 
 
 @mcp.tool()
@@ -322,9 +269,8 @@ async def resume_session_tool(session_id: str) -> dict:
     in CC chat after an earlier `chat` action paused the session.
 
     The chatted node is LOCKED (chat triggered an immediate buffer flush).
-    Do NOT re-poll `wait_for_action` on it — that returns the already
-    committed batch instantly. After resume, push a NEW `present_branches`
-    to keep grilling, or call `end_session` if the user is done.
+    No further actions on it via channel either. After resume, push a NEW
+    `present_branches` to keep grilling, or call `end_session` if done.
 
     No-op if session is not paused.
     """

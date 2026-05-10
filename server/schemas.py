@@ -94,6 +94,10 @@ class Session(BaseModel):
     nodes: dict[str, Node] = Field(default_factory=dict)
     # node_id -> list of hook events attached (Read/Grep/Bash etc)
     hook_traces: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    # monotonic per-session counter incremented each _flush — emitted on
+    # node_committed SSE + channel notif so the skill can detect gaps
+    # (snapshot-on-wake fallback when seq jumps non-contiguously)
+    next_seq: int = 0
 
 
 # ---- SSE outbound events (server -> GUI) ----
@@ -157,16 +161,6 @@ class AskBranchesResult(BaseModel):
     # full chosen-path markdown — set only on create_plan / implement_now
     # so model can drive plan-write or coding directly off this string
     chain_markdown: Optional[str] = None
-
-
-class WaitForActionResult(BaseModel):
-    """Batched return for wait_for_action.
-
-    Empty `actions` = skip (transport timeout, no flush yet — re-poll).
-    Non-empty = flushed batch; idempotent on subsequent polls.
-    """
-    node_id: str
-    actions: list[AskBranchesResult] = Field(default_factory=list)
 
 
 # ---- claude code hook payload (subset we care about) ----

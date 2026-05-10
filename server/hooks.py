@@ -165,9 +165,9 @@ async def actions_endpoint(request: Request) -> Response:
                 "payload": {"summary": "", "ended_at": time.time()},
             },
         )
-        # Skip clearing the summary node itself — wait_for_action may still
-        # be in-flight; clearing _actions[node_id] now would cause the next
-        # poll to return empty. Other nodes have already been read.
+        # Skip clearing the summary node itself — its committed_actions still
+        # need to feed the channel notif being emitted from _flush above.
+        # Other nodes have already been delivered.
         if s2:
             for nid in list(s2.nodes.keys()):
                 if nid != action.node_id:
