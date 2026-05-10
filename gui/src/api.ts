@@ -21,7 +21,9 @@ export async function postAction(
   if (!res.ok) throw new Error(`action ${action} failed: ${res.status}`);
 }
 
-export async function listSessions(): Promise<{ sessions: { id: string; brief: string; started_at: number }[] }> {
+import type { SessionMeta } from "./types";
+
+export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {
   const r = await fetch("/sessions");
   return r.json();
 }

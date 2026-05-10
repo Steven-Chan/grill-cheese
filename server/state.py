@@ -149,7 +149,8 @@ class Store:
         self.get_event(node_id).set()
         # broadcast committed event (timer callback is sync — schedule task)
         try:
-            asyncio.get_event_loop().create_task(
+            loop = asyncio.get_event_loop()
+            loop.create_task(
                 self.broadcast(
                     session_id,
                     {
@@ -162,6 +163,8 @@ class Store:
                     },
                 )
             )
+            # flush flips has_pending if this was the last open node
+            loop.create_task(self.broadcast_session_list())
         except RuntimeError:
             # no running loop (test teardown) — skip broadcast
             pass
@@ -317,6 +320,54 @@ class Store:
         node_id = ev.grill_node_id or "_unbound"
         s.hook_traces.setdefault(node_id, []).append(ev.model_dump())
 
+    # ---- session-list helpers ----
+    def _has_pending(self, sid: str) -> bool:
+        """True when session has at least one non-implicit node not yet flushed.
+        Paused / ended sessions never count — spec says * fires only on
+        active sessions awaiting a click."""
+        s = self.sessions.get(sid)
+        if not s or s.status != "active":
+            return False
+        for nid, node in s.nodes.items():
+            if node.implicit:
+                continue
+            if nid not in self._flushed:
+                return True
+        return False
+
+    def _session_list_snapshot(self) -> dict[str, Any]:
+        return {
+            "type": "session_list",
+            "session_id": "",
+            "payload": {
+                "sessions": [
+                    {
+                        "id": s.id,
+                        "brief": s.brief,
+                        "started_at": s.started_at,
+                        "status": s.status,
+                        "has_pending": self._has_pending(s.id),
+                    }
+                    for s in self.sessions.values()
+                ]
+            },
+        }
+
+    async def broadcast_session_list(self) -> None:
+        """Fan a fresh session_list snapshot to every subscriber (per-session
+        + global). Bypasses the per-session ring — list snapshots are derived
+        state, not history."""
+        ev = self._session_list_snapshot()
+        async with self._lock:
+            targets: list[asyncio.Queue[dict[str, Any]]] = list(self._global_subs)
+            for subs in self._subs.values():
+                targets.extend(subs)
+        for q in targets:
+            try:
+                q.put_nowait(ev)
+            except asyncio.QueueFull:
+                pass
+
     # ---- SSE pub/sub ----
     async def subscribe(
         self, sid: Optional[str]
@@ -330,23 +381,8 @@ class Store:
                     await q.put(ev)
             else:
                 self._global_subs.append(q)
-                # send session list snapshot
-                await q.put(
-                    {
-                        "type": "session_list",
-                        "session_id": "",
-                        "payload": {
-                            "sessions": [
-                                {
-                                    "id": s.id,
-                                    "brief": s.brief,
-                                    "started_at": s.started_at,
-                                }
-                                for s in self.sessions.values()
-                            ]
-                        },
-                    }
-                )
+            # send fresh session list snapshot to every new subscriber
+            await q.put(self._session_list_snapshot())
         return q
 
     async def unsubscribe(

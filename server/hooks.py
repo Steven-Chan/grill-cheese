@@ -108,6 +108,7 @@ async def actions_endpoint(request: Request) -> Response:
                     },
                 },
             )
+            await store.broadcast_session_list()
 
     # Terminal-class clicks bypass the idle timer.
     if action.action in ("next", "other", "stop", "chat"):
@@ -121,7 +122,13 @@ async def sessions_endpoint(request: Request) -> Response:
     return JSONResponse(
         {
             "sessions": [
-                {"id": s.id, "brief": s.brief, "started_at": s.started_at}
+                {
+                    "id": s.id,
+                    "brief": s.brief,
+                    "started_at": s.started_at,
+                    "status": s.status,
+                    "has_pending": store._has_pending(s.id),
+                }
                 for s in store.sessions.values()
             ]
         }

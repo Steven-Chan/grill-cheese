@@ -37,6 +37,7 @@ async def start_session(brief: str) -> dict:
             "payload": {"brief": brief, "started_at": s.started_at},
         },
     )
+    await store.broadcast_session_list()
     return {"session_id": s.id, "started_at": s.started_at}
 
 
@@ -74,6 +75,7 @@ async def present_branches(
                 "payload": {},
             },
         )
+        await store.broadcast_session_list()
     node = store.add_node(
         sid=session_id,
         question=question,
@@ -92,6 +94,8 @@ async def present_branches(
             "payload": node.model_dump(),
         },
     )
+    # node_added flips has_pending=true for this session
+    await store.broadcast_session_list()
     return {"node_id": node.id}
 
 
@@ -212,12 +216,16 @@ async def resume_session_tool(session_id: str) -> dict:
             "payload": {},
         },
     )
+    await store.broadcast_session_list()
     return {"ok": True}
 
 
 @mcp.tool()
 async def end_session(session_id: str, summary: str = "") -> dict:
     """End the grill session. Final summary is broadcast to GUI."""
+    s = store.get(session_id)
+    if s:
+        s.status = "ended"
     await store.broadcast(
         session_id,
         {
@@ -227,10 +235,10 @@ async def end_session(session_id: str, summary: str = "") -> dict:
         },
     )
     # release per-node action / event entries for nodes in this session
-    s = store.get(session_id)
     if s:
         for node_id in list(s.nodes.keys()):
             store.clear_node_state(node_id)
+    await store.broadcast_session_list()
     return {"ok": True}
 
 

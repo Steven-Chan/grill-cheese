@@ -33,10 +33,14 @@ export interface HookTrace {
   grill_node_id?: string | null;
 }
 
+export type SessionStatus = "active" | "paused" | "ended";
+
 export interface SessionMeta {
   id: string;
   brief: string;
   started_at: number;
+  status: SessionStatus;
+  has_pending: boolean;
 }
 
 export interface PausedState {
