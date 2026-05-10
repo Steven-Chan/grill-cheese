@@ -44,6 +44,8 @@ function CanvasInner() {
   const programmaticMove = useRef(false);
   // safety timer: clears flag if onMoveStart never fires (no-op setCenter).
   const programmaticTimer = useRef<number | null>(null);
+  // delay single-click recenter so a double-click can cancel it and fit instead.
+  const clickTimer = useRef<number | null>(null);
 
   // First-measure dynamic sizing. xyflow measures the rendered DOM and
   // exposes dims via getInternalNode().measured. We rAF-poll once per
@@ -175,6 +177,10 @@ function CanvasInner() {
         window.clearTimeout(programmaticTimer.current);
         programmaticTimer.current = null;
       }
+      if (clickTimer.current !== null) {
+        window.clearTimeout(clickTimer.current);
+        clickTimer.current = null;
+      }
     };
   }, []);
 
@@ -216,6 +222,37 @@ function CanvasInner() {
       duration: FOCUS_DURATION_MS,
       zoom: rf.getZoom(),
     });
+  };
+
+  // dblclick on recenter btn -> zoom-to-fit the latest card.
+  const fitToLast = () => {
+    if (!lastNodeId) return;
+    setUserPanned(false);
+    armProgrammaticMove();
+    rf.fitView({
+      nodes: [{ id: lastNodeId }],
+      duration: FOCUS_DURATION_MS,
+      padding: 0.2,
+    });
+  };
+
+  // single click delay -> dblclick can cancel + fit instead.
+  const handleRecenterClick = () => {
+    if (clickTimer.current !== null) {
+      window.clearTimeout(clickTimer.current);
+    }
+    clickTimer.current = window.setTimeout(() => {
+      clickTimer.current = null;
+      jumpToLast();
+    }, 400);
+  };
+
+  const handleRecenterDblClick = () => {
+    if (clickTimer.current !== null) {
+      window.clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    fitToLast();
   };
 
   // onMoveStart fires for programmatic setCenter too — swallow that one
@@ -261,10 +298,11 @@ function CanvasInner() {
           </button>
           <button
             className={`gc-jump-btn${isActive ? " active" : ""}`}
-            onClick={jumpToLast}
+            onClick={handleRecenterClick}
+            onDoubleClick={handleRecenterDblClick}
             disabled={!lastNodeId}
-            aria-label="Recenter on latest node"
-            title="Recenter on latest node"
+            aria-label="Recenter on latest node (double-click to fit)"
+            title="Recenter on latest node (double-click to fit)"
           >
             <RecenterIcon />
           </button>
