@@ -45,12 +45,11 @@ async def hooks_endpoint(request: Request) -> Response:
 
 
 async def actions_endpoint(request: Request) -> Response:
-    """POST from GUI: next / other / stop / chat / summary verdicts.
+    """POST from GUI: next / stop / chat / summary verdicts.
 
     Click flow: mutate node state immediately + broadcast node_updated, append
     record to per-node buffer, reset 750ms idle timer. Terminal-class clicks
-    flush immediately. On flush the buffer is handed to wait_for_action and
-    the node is locked — further clicks 409.
+    flush immediately. On flush the buffer is locked — further clicks 409.
     """
     try:
         raw = await request.json()
@@ -58,13 +57,9 @@ async def actions_endpoint(request: Request) -> Response:
     except Exception as e:
         return JSONResponse({"ok": False, "err": str(e)}, status_code=400)
 
-    if action.action == "next" and not action.branch_id:
+    if action.action == "next" and not action.branch_ids and not (action.note or "").strip():
         return JSONResponse(
-            {"ok": False, "err": "next requires branch_id"}, status_code=400
-        )
-    if action.action == "other" and not action.note:
-        return JSONResponse(
-            {"ok": False, "err": "other requires note"}, status_code=400
+            {"ok": False, "err": "next requires branch_ids or note"}, status_code=400
         )
 
     if store.is_flushed(action.node_id):
@@ -75,12 +70,18 @@ async def actions_endpoint(request: Request) -> Response:
     # picking or chatting on a chat-removed branch is a 409, not 400, so the
     # GUI can show a "this option was removed in a recent chat" toast.
     s_pre = store.get(action.session_id)
-    if s_pre and action.action in ("next", "chat") and action.branch_id:
+    if s_pre:
         node_pre = s_pre.nodes.get(action.node_id)
-        if node_pre and action.branch_id in node_pre.removed_branch_ids:
-            return JSONResponse(
-                {"ok": False, "err": "branch_removed"}, status_code=409
-            )
+        if node_pre:
+            removed = set(node_pre.removed_branch_ids)
+            if action.action == "next" and any(b in removed for b in action.branch_ids):
+                return JSONResponse(
+                    {"ok": False, "err": "branch_removed"}, status_code=409
+                )
+            if action.action == "chat" and action.branch_id and action.branch_id in removed:
+                return JSONResponse(
+                    {"ok": False, "err": "branch_removed"}, status_code=409
+                )
 
     record = store.apply_action(action)
     if record is None:
@@ -90,18 +91,20 @@ async def actions_endpoint(request: Request) -> Response:
         # is annoying — return the dedicated branch_removed code so the
         # GUI can show the right message.
         s_recheck = store.get(action.session_id)
-        if (
-            s_recheck
-            and action.branch_id
-            and action.action in ("next", "chat")
-        ):
+        if s_recheck:
             n_recheck = s_recheck.nodes.get(action.node_id)
-            if n_recheck and action.branch_id in n_recheck.removed_branch_ids:
-                return JSONResponse(
-                    {"ok": False, "err": "branch_removed"}, status_code=409
-                )
+            if n_recheck:
+                removed = set(n_recheck.removed_branch_ids)
+                if action.action == "next" and any(b in removed for b in action.branch_ids):
+                    return JSONResponse(
+                        {"ok": False, "err": "branch_removed"}, status_code=409
+                    )
+                if action.action == "chat" and action.branch_id and action.branch_id in removed:
+                    return JSONResponse(
+                        {"ok": False, "err": "branch_removed"}, status_code=409
+                    )
         return JSONResponse(
-            {"ok": False, "err": "invalid session_id, node_id, or branch_id"},
+            {"ok": False, "err": "invalid session_id, node_id, or branch_ids"},
             status_code=400,
         )
 
@@ -118,8 +121,8 @@ async def actions_endpoint(request: Request) -> Response:
 
     store.enqueue_action(action.session_id, action.node_id, record)
 
-    # Persist node mutations (apply_action mutates chosen_branch_id / branches /
-    # user_note; enqueue_action appends to node.pending_actions).
+    # Persist node mutations (apply_action mutates chosen_branch_ids /
+    # branches; enqueue_action appends to node.pending_actions).
     if s:
         store._persist(s)
 
@@ -262,21 +265,21 @@ def _render_md(s, node_id, lines, depth, visited):
         lines.append("")
         lines.append(f"> **Chat ({c.outcome}):** {c.summary}")
     lines.append("")
+    chosen_set = set(n.chosen_branch_ids)
     for b in n.branches:
         marks = []
         if b.is_recommended:
             marks.append("recommended")
-        if b.id == n.chosen_branch_id:
+        if b.id in chosen_set:
             marks.append("chosen")
+        if b.user_authored:
+            marks.append("typed")
         if b.id in n.removed_branch_ids:
             marks.append("removed via chat")
         suffix = f" *({', '.join(marks)})*" if marks else ""
         lines.append(f"- **{b.label}**{suffix}")
-        if b.rationale:
+        if b.rationale and not b.user_authored:
             lines.append(f"  - {b.rationale}")
-    if n.user_note:
-        lines.append("")
-        lines.append(f"**User note:** {n.user_note}")
     lines.append("")
     for b in n.branches:
         if b.child_node_id:

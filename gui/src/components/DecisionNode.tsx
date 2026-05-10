@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { DecisionNode as DNode, Branch, ChatBlock } from "../types";
 import { postAction } from "../api";
@@ -16,38 +16,84 @@ export function DecisionNode({ data }: NodeProps) {
   const hydratedAt = useStore((s) => s.sessionHydratedAt);
   const isFresh = node.created_at >= hydratedAt;
   const [hooksOpen, setHooksOpen] = useState(false);
-  const [otherOpen, setOtherOpen] = useState(false);
-  const [otherText, setOtherText] = useState("");
   const [chatHistoryOpen, setChatHistoryOpen] = useState(false);
 
-  const send = async (
-    action: "next" | "other" | "chat",
-    bid?: string,
-    note?: string
-  ) => {
-    if (!sid) return;
-    try {
-      await postAction(sid, node.id, action, bid, note);
-    } catch (e) {
-      console.error(e);
-    }
-  };
+  // pendingChecks + pendingNote: pre-submit local state. Reset on chat
+  // (clean-slate-on-resume). Initialised from ★ branches once per node id.
+  const [pendingChecks, setPendingChecks] = useState<Set<string>>(new Set());
+  const [pendingNote, setPendingNote] = useState("");
+  const initialisedFor = useRef<string | null>(null);
+  const multi = !!node.multi_select;
 
-  const submitOther = async () => {
-    const t = otherText.trim();
-    if (!t) return;
-    await send("other", undefined, t);
-    setOtherText("");
-    setOtherOpen(false);
-  };
+  useEffect(() => {
+    // one-shot per node id. node.branches/multi intentionally excluded —
+    // chat refine adds branches via node_updated SSE; re-initialising would
+    // erase the user's mid-selection. multi_select is immutable post-creation.
+    if (initialisedFor.current === node.id) return;
+    initialisedFor.current = node.id;
+    const recs = node.branches.filter((b) => b.is_recommended).map((b) => b.id);
+    if (multi) setPendingChecks(new Set(recs));
+    else setPendingChecks(recs.length > 0 ? new Set([recs[0]]) : new Set());
+    setPendingNote("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id]);
 
   const committed = !!node.committed;
   const redirected = !!node.redirected;
   const chats: ChatBlock[] = node.chats ?? [];
   const removedSet = new Set(node.removed_branch_ids ?? []);
-  const chosenId = node.chosen_branch_id ?? null;
+  const chosenIds = new Set(node.chosen_branch_ids ?? []);
   const latestChat = chats.length > 0 ? chats[chats.length - 1] : null;
   const earlierChats = chats.length > 1 ? chats.slice(0, -1) : [];
+  const interactive = isPending && !committed && !redirected;
+
+  const toggleCheck = (bid: string) => {
+    setPendingChecks((prev) => {
+      const next = new Set(prev);
+      if (next.has(bid)) next.delete(bid);
+      else {
+        if (!multi) next.clear();
+        next.add(bid);
+      }
+      return next;
+    });
+  };
+
+  const submit = async () => {
+    if (!sid) return;
+    const note = pendingNote.trim();
+    if (pendingChecks.size === 0 && !note) return;
+    try {
+      await postAction(sid, node.id, "next", {
+        branch_ids: Array.from(pendingChecks),
+        note: note || undefined,
+      });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // single-mode quick-pick: keep per-row pick→ button. Skips pendingChecks +
+  // submits in one shot (matches today's UX).
+  const quickPick = async (bid: string) => {
+    if (!sid) return;
+    try {
+      await postAction(sid, node.id, "next", { branch_ids: [bid] });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const sendChat = async (bid?: string) => {
+    if (!sid) return;
+    setPendingChecks(new Set());
+    setPendingNote("");
+    try {
+      await postAction(sid, node.id, "chat", { branch_id: bid });
+    } catch (e) {
+      console.error(e);
+    }
+  };
 
   const wrapperClasses = [
     "gc-node",
@@ -56,9 +102,12 @@ export function DecisionNode({ data }: NodeProps) {
     committed ? "committed" : "",
     redirected ? "redirected" : "",
     chats.length > 0 ? "chatted" : "",
+    multi ? "multi" : "",
   ]
     .filter(Boolean)
     .join(" ");
+
+  const submitGated = pendingChecks.size === 0 && pendingNote.trim() === "";
 
   return (
     <div className={wrapperClasses}>
@@ -67,6 +116,7 @@ export function DecisionNode({ data }: NodeProps) {
       <div className="gc-node-head">
         <span className="gc-node-depth">d{node.depth}</span>
         {node.implicit && <span className="gc-node-tag">implicit</span>}
+        {multi && <span className="gc-node-tag">multi</span>}
         {redirected && <span className="gc-node-tag redirected">redirected</span>}
         {isPending && !committed && !redirected && (
           <span className="gc-node-tag pulse">awaiting</span>
@@ -118,71 +168,54 @@ export function DecisionNode({ data }: NodeProps) {
           <BranchRow
             key={b.id}
             branch={b}
-            chosen={b.id === chosenId}
+            chosen={chosenIds.has(b.id)}
+            checked={pendingChecks.has(b.id)}
             removed={removedSet.has(b.id)}
-            onPick={send}
-            pending={isPending && !committed && !redirected}
+            multi={multi}
+            interactive={interactive}
             committed={committed}
+            onToggle={() => toggleCheck(b.id)}
+            onQuickPick={() => quickPick(b.id)}
+            onChat={() => sendChat(b.id)}
           />
         ))}
-        {isPending && !committed && !redirected && (
-          <div className="gc-branch other">
-            {!otherOpen ? (
-              <div className="gc-branch-row">
-                <span className="gc-branch-glyph">+</span>
-                <button className="gc-btn ghost" onClick={() => setOtherOpen(true)}>
-                  Other / type your answer
-                </button>
-              </div>
-            ) : (
-              <div className="gc-other-box">
-                <textarea
-                  className="gc-other-input"
-                  value={otherText}
-                  onChange={(e) => setOtherText(e.target.value)}
-                  placeholder="Your answer — Claude will use this to drive the next question."
-                  rows={3}
-                  autoFocus
-                />
-                <div className="gc-branch-actions">
-                  <button className="gc-btn primary" onClick={submitOther}>
-                    send
-                  </button>
-                  <button
-                    className="gc-btn ghost"
-                    onClick={() => {
-                      setOtherOpen(false);
-                      setOtherText("");
-                    }}
-                  >
-                    cancel
-                  </button>
-                </div>
-              </div>
-            )}
+        {interactive && (
+          <div className="gc-other-box">
+            <textarea
+              className="gc-other-input"
+              value={pendingNote}
+              onChange={(e) => setPendingNote(e.target.value)}
+              placeholder={
+                multi
+                  ? "Optional — add a typed answer alongside your checks"
+                  : "Or type your own answer (becomes a new option)"
+              }
+              rows={2}
+            />
           </div>
         )}
-        {isPending && !committed && !redirected && (
-          <div className="gc-branch chat">
-            <div className="gc-branch-row">
-              <span className="gc-branch-glyph">⎘</span>
-              <button
-                className="gc-btn ghost"
-                onClick={() => send("chat")}
-                title="Pause grill, chat about this question in Claude Code"
-              >
-                Chat about this
-              </button>
-            </div>
+        {interactive && (
+          <div className="gc-submit-row">
+            <button
+              className="gc-btn primary"
+              onClick={submit}
+              disabled={submitGated}
+              title={submitGated ? "Pick at least one option or type an answer" : "Submit"}
+            >
+              {multi
+                ? `submit${pendingChecks.size + (pendingNote.trim() ? 1 : 0) > 0 ? ` (${pendingChecks.size + (pendingNote.trim() ? 1 : 0)})` : ""}`
+                : "submit →"}
+            </button>
+            <button
+              className="gc-btn ghost"
+              onClick={() => sendChat()}
+              title="Pause grill, chat about this question in Claude Code"
+            >
+              chat about this
+            </button>
           </div>
         )}
       </div>
-      {node.user_note && (
-        <div className="gc-user-note">
-          <span className="gc-node-tag">other</span>
-          <div className="gc-user-note-body">{node.user_note}</div>
-        </div>
-      )}
       {traces.length > 0 && (
         <div className="gc-hooks">
           <button className="gc-link" onClick={() => setHooksOpen((o) => !o)}>
@@ -209,28 +242,50 @@ export function DecisionNode({ data }: NodeProps) {
 function BranchRow({
   branch,
   chosen,
+  checked,
   removed,
-  onPick,
-  pending,
+  multi,
+  interactive,
   committed,
+  onToggle,
+  onQuickPick,
+  onChat,
 }: {
   branch: Branch;
   chosen: boolean;
+  checked: boolean;
   removed: boolean;
-  onPick: (a: "next" | "other" | "chat", bid?: string, note?: string) => void;
-  pending: boolean;
+  multi: boolean;
+  interactive: boolean;
   committed: boolean;
+  onToggle: () => void;
+  onQuickPick: () => void;
+  onChat: () => void;
 }) {
   const [showRationale, setShowRationale] = useState(false);
   const stateClass = chosen
     ? "state-chosen"
     : removed
       ? "state-removed"
-      : "";
-  const glyph = chosen ? "●" : removed ? "✕" : "·";
+      : checked && interactive
+        ? "state-checked"
+        : "";
+  // glyph: chosen wins; else removed; else multi=checkbox state; else single-mode dot
+  const glyph = chosen
+    ? "●"
+    : removed
+      ? "✕"
+      : multi
+        ? checked
+          ? "☑"
+          : "☐"
+        : checked
+          ? "◉"
+          : "○";
+  const rowDisabled = !interactive || removed;
   return (
     <div
-      className={`gc-branch ${stateClass} ${branch.is_recommended ? "recommended" : ""}`}
+      className={`gc-branch ${stateClass} ${branch.is_recommended ? "recommended" : ""} ${branch.user_authored ? "user-authored" : ""}`}
     >
       <Handle
         type="source"
@@ -238,22 +293,34 @@ function BranchRow({
         id={branch.id}
         style={{ top: "50%", right: -6 }}
       />
-      <div className="gc-branch-row">
+      <div
+        className="gc-branch-row"
+        onClick={() => {
+          if (rowDisabled) return;
+          onToggle();
+        }}
+        role={interactive ? "button" : undefined}
+        style={interactive ? { cursor: "pointer" } : undefined}
+      >
         <span
           className="gc-branch-glyph"
-          title={chosen ? "chosen" : removed ? "removed via chat" : "considered"}
+          title={chosen ? "chosen" : removed ? "removed via chat" : checked ? "selected" : "considered"}
         >
           {glyph}
         </span>
         <span className="gc-branch-label">
           {branch.label}
           {branch.is_recommended && <span className="gc-rec">★</span>}
+          {branch.user_authored && <span className="gc-typed-tag">typed</span>}
         </span>
-        {branch.rationale && (
+        {branch.rationale && !branch.user_authored && (
           <button
             type="button"
             className={`gc-branch-chevron nodrag ${showRationale ? "open" : ""}`}
-            onClick={() => setShowRationale((o) => !o)}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowRationale((o) => !o);
+            }}
             aria-expanded={showRationale}
             aria-label={showRationale ? "hide rationale" : "show rationale"}
             title={showRationale ? "hide rationale" : "show rationale"}
@@ -271,27 +338,38 @@ function BranchRow({
           </button>
         )}
       </div>
-      {showRationale && branch.rationale && (
+      {showRationale && branch.rationale && !branch.user_authored && (
         <div className="gc-branch-rationale">{branch.rationale}</div>
       )}
-      {!committed && !removed && (
+      {!committed && !removed && interactive && (
         <div className="gc-branch-actions">
           {chosen ? (
             <span className="gc-dim">picked</span>
-          ) : pending ? (
+          ) : (
             <>
-              <button className="gc-btn primary" onClick={() => onPick("next", branch.id)}>
-                pick →
-              </button>
+              {!multi && (
+                <button
+                  className="gc-btn primary"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onQuickPick();
+                  }}
+                >
+                  pick →
+                </button>
+              )}
               <button
                 className="gc-btn ghost"
-                onClick={() => onPick("chat", branch.id)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onChat();
+                }}
                 title="Pause grill, chat about THIS option in CC"
               >
                 chat
               </button>
             </>
-          ) : null}
+          )}
         </div>
       )}
     </div>

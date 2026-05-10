@@ -22,39 +22,44 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
    ```
    Save the trimmed output as `project`. Then compose a `title` — short imperative noun phrase, project-style (e.g. `Add billing system`, `Refactor SSE pubsub`). Hard cap **80 chars**, server rejects empty / overlong. Then call `start_session(title=<title>, brief=<the user's plan>, project=<project>)`. Save the returned `session_id`. The server uses `project` to partition session JSON files under `~/.grill-cheese/project-<project>/sessions/`. Title shows in the toolbar; brief lives in a collapsible banner.
 
-2. **Generate the next question.** Identify the *single most important live decision* given everything you know so far (the brief + every answer the user has given). Frame it as one focused question, like /grill-me would. Generate **2–4 candidate answers** as branches with one-sentence rationales; mark exactly one `is_recommended: true` (your honest pick).
+2. **Generate the next question.** Identify the *single most important live decision* given everything you know so far (the brief + every answer the user has given). Frame it as one focused question, like /grill-me would. Generate **2–4 candidate answers** as branches with one-sentence rationales. Single-mode (default): mark exactly one `is_recommended: true`. Multi-mode (set `multi_select=True`): mark every branch you'd pick (zero or more); GUI auto-checks all ★ on render.
 
-3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
+3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth, multi_select?)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
 
 4. **On wake — read the `<channel>` block.** When you see input that contains a `<channel source="grill-cheese" ...>` block (in the user message), parse its JSON content:
    ```
    <channel source="grill-cheese" session_id="ab12cd34" node_id="n3" seq="7">
    {"session_id": "ab12cd34", "node_id": "n3", "seq": 7,
-    "actions": [{"node_id": "n3", "chosen_branch_id": "b2",
-                 "chosen_branch_label": "Usage-based", "action": "next"}]}
+    "actions": [{"node_id": "n3",
+                 "chosen_branch_ids": ["b2"],
+                 "chosen_branch_labels": ["Usage-based"],
+                 "action": "next"}]}
    </channel>
    ```
-   - `actions` is the flushed batch — the same list the old `wait_for_action` returned. Per-item: `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action, chain_markdown?}`. Per-item action: `next` | `other` | `stop` | `chat` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`.
+   - `actions` is the flushed batch. Per-item shape:
+     `{node_id, chosen_branch_ids?, chosen_branch_labels?, note?, action, chain_markdown?, chat_branch_id?, chat_branch_label?}`.
+     Per-item action: `next` | `stop` | `chat` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`.
+     `chosen_branch_ids` / `chosen_branch_labels` are PARALLEL LISTS (same length, same order). Single-mode = length 1; multi-mode = length ≥ 1; may also include a synth `user_authored` branch when the user typed text alongside picks.
+     `chat_branch_id` / `chat_branch_label` are set ONLY for `action=chat` (per-row chat scope).
    - `seq` is a per-session monotonic counter. Track `last_seen_seq` mentally. If `seq == last_seen_seq + 1` (or this is the first wake): act on `actions` directly. If `seq` jumped (server restart, missed events): call `get_session_snapshot(session_id)`, replay any flushed nodes you missed, then act.
 
 5. **Read the batch as a narrative and decide what to ask next.**
 
-   The batch is usually a single terminal click; occasionally it bundles a typed `other` and the chat trigger flushed in the same idle window. The last terminal-class action is the user's final word.
+   The batch is usually a single terminal click; occasionally it bundles a chat trigger that flushed in the same idle window. The last terminal-class action is the user's final word.
 
-   - **`action == "next"`** → user picked one of your branches. Read `chosen_branch_label` (not the id).
-   - **`action == "other"`** → user typed free text. `note` carries the text. Read it like a /grill-me chat reply — it may override branches or redirect the question.
-   - **`action == "stop"`** → user clicked **wrap up** in the toolbar — they want a verdict card next, NOT a hard stop. Call `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<this node's id>, parent_branch_id=<chosen branch id from this node, if any>)`. END TURN. The next channel wake delivers the verdict-action; see "Ending" below. Do NOT call `end_session`.
-   - **`action == "chat"`** → user paused the grill to chat about this node in CC. Server marked the session paused and locked this node. `chosen_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`**. Do NOT push another node yet — instead reply conversationally in CC. When the user signals "back to grilling", call `apply_chat_result(...)` (see "Chat as decision" below) — that lands the chat outcome and resumes the session.
+   - **`action == "next"`** → user submitted picks. Read `chosen_branch_labels` (LIST). Single-mode = one label; multi-mode = N labels. If a label corresponds to a synth `user_authored` branch (label is the first 60 chars of typed text), treat that segment as the user's literal free-text answer — it carries the same weight as a chat redirect. `note` (if set) is the raw typed text echo and may be slightly longer than the synth label.
+   - **`action == "stop"`** → user clicked **wrap up** in the toolbar — they want a verdict card next, NOT a hard stop. Call `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<this node's id>, parent_branch_id=<first chosen branch id from this node, if any>)`. END TURN. The next channel wake delivers the verdict-action; see "Ending" below. Do NOT call `end_session`.
+   - **`action == "chat"`** → user paused the grill to chat about this node in CC. Server marked the session paused and locked this node. `chat_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`**. Do NOT push another node yet — instead reply conversationally in CC. When the user signals "back to grilling", call `apply_chat_result(...)` (see "Chat as decision" below) — that lands the chat outcome and resumes the session.
    - **`action == "stop_here"`** → summary verdict: user approved, no further action. Server has already ended the session. Point user at the export. Do NOT call `end_session`.
    - **`action == "create_plan"`** → summary verdict: user approved, wants a detailed implementation plan first (not code). `chain_markdown` carries the full chosen-path recap. Use it to draft a plan (markdown doc, ordered task list, file-level breakdown). Server has already ended the session. Do NOT call `end_session`.
    - **`action == "implement_now"`** → summary verdict: user approved, wants code now. `chain_markdown` carries the full chosen-path recap. Start coding immediately based on the decisions. Server has already ended the session. Do NOT call `end_session`.
-   - **`action == "continue_grill"`** → user wants more grilling. `chosen_branch_id` is the synthetic continuation branch id; `note` (if set) is the user's redirect for what to drill into next. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_id>, ...)` to resume — and END TURN. Session NOT ended.
+   - **`action == "continue_grill"`** → user wants more grilling. `chosen_branch_ids[0]` is the synthetic continuation branch id; `note` (if set) is the user's redirect for what to drill into next. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_ids[0]>, ...)` to resume — and END TURN. Session NOT ended.
 
    Then *you decide* what the next question is — exactly like /grill-me. Two natural moves:
-   - **Drill down**: ask the follow-up that *only exists because of the chosen answer*. Pass `parent_node_id=node_id`, `parent_branch_id=<chosen_branch_id from the final next item>`, `depth+=1`.
+   - **Drill down**: ask the follow-up that *only exists because of the chosen answer(s)*. Pass `parent_node_id=node_id`, `parent_branch_id=<chosen_branch_ids[0]>` (canonical anchor; fold the rest of the set into the next question's text). `depth+=1`.
    - **Move sideways**: ask a different decision the brief surfaces. Push as a new root or as a child of an already-chosen ancestor.
 
-   No special button signals "drill" vs "sideways" — *you* judge. The user's `note` (when present) is your strongest signal: if they wrote "now I'm worried about X", drill into X.
+   No special button signals "drill" vs "sideways" — *you* judge. Free-text via synth branch is your strongest signal: if user typed "now I'm worried about X", drill into X.
 
    After pushing the next `present_branches`, END TURN again. The next channel wake will deliver the next action.
 
@@ -65,13 +70,14 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 - **One present_branches call per logical question.** Push, end turn, wait for channel. Do not push again on the same logical question.
 - **END YOUR TURN after every `present_branches` and `present_summary` call.** The tool result's `instruction` field is the explicit signal. Do not call other tools, do not generate further text. The channel will wake you with the action. Generating after the push wastes tokens and breaks the latency win — the whole point of channels-mode is that you sit out the user's think-time.
 - **Use the `antml:parameter` namespace prefix on EVERY param.** When the prefix is missing on `branches` (e.g. `<parameter name="branches">` instead of `<parameter name="branches">`), the harness silently drops the field. Pydantic then errors with `branches Field required` even though it was written. The error message is misleading — the param was sent, just under the wrong namespace, and stripped before the tool saw it. Same risk for any parameter, but `branches` is the one that bites because it's the largest and easiest to lose track of when copy-pasting.
-- **2–4 branches per node.** Two if truly binary; up to four when the design space splits more. Never one. Never five. The "Other / type your answer" option is added by the GUI automatically — do not add it as a branch yourself.
-- **Mark exactly one branch `is_recommended: true`** — your honest pick *given the path so far*. Used as a tiebreaker when the user trusts you.
+- **2–4 branches per node.** Two if truly binary; up to four when the design space splits more. Never one. Never five. The typed-text input is added by the GUI automatically (in both modes) — do not add an "Other" branch yourself; the user's typed answer is synthesized into a `user_authored` branch on submit.
+- **Recommendation (`is_recommended: true`):** Single-mode → mark exactly one (your honest pick, used as tiebreaker). Multi-mode → mark every branch you'd recommend (zero or more); GUI pre-checks them all so the user can submit your set with one click.
+- **Use `multi_select=True`** when the question genuinely admits multiple simultaneous picks ("which of these concerns matter to you?", "which datacenters?"). Default is single-mode. If only one answer makes sense, leave it false.
 - **Each branch carries a `rationale` string** (one sentence, why this option is plausible). Don't pad. Don't repeat the question.
 - **The node's `reasoning`** is *why this question matters now* — what makes it the next live decision. One or two sentences.
 - **Explore the codebase before asking** when a question can be answered by reading code (file paths, existing patterns, type definitions). Use `Read` / `Glob` / `Grep` first; let what you find shape the branch rationales, not replace asking.
 - **Branch labels are short** (≤ 6 words). Rationale carries the detail.
-- **Take "other" answers literally.** If the user types "actually let's stop and look at X instead", do that. Don't paraphrase or pick the closest branch. The whole point of the text input is to let the user override your option set.
+- **Take typed answers literally.** Synth `user_authored` branches in `chosen_branch_labels` (or `note`) carry the user's literal words. If the user types "actually let's stop and look at X instead", do that. Don't paraphrase or pick the closest pre-existing branch. The text input exists to let the user override your option set.
 - **Respect chat-removed branches.** Read `node.removed_branch_ids` from the snapshot before composing follow-up branches. Do not re-surface a branch that chat removed.
 - **Track `last_seen_seq` per session.** It comes in every `<channel>` block. If the next wake's `seq` is not exactly `last_seen_seq + 1`, fall back to `get_session_snapshot` to catch up — flushed-but-not-delivered nodes will surface as `is_flushed: true` with `committed_actions` populated.
 - **On `chat`: NEVER call `end_session`.** Chat pauses the session, it does not end it. The chatted node is locked (cannot be answered further until apply_chat_result lands). Continue in plain chat; when ready to keep grilling, call `apply_chat_result(...)` — see "Chat as decision".
@@ -94,7 +100,7 @@ Pick **one outcome** based on what actually happened in the chat:
 
 - **`refine`** — the original question still stands, but the chat sharpened the option set. Pass `ops` with `adds` (new branches the chat surfaced) and/or `removes` (branch ids the chat killed). Existing branches NOT in `ops.adds`/`ops.removes` stay untouched. To "edit" a branch, remove the old + add a new one — never silently rewrite. After apply, the node is unlocked; user picks one of the (now updated) branches.
 - **`redirect`** — the chat revealed the question is wrong. Original node gets marked `redirected` (greyed on canvas). The response includes `redirect_branch_id` — a synthesized branch on the chatted node. You MUST pass it as `parent_branch_id` on the next `present_branches` call so the post-redirect question wires correctly on canvas. `parent_node_id` = the chatted node id.
-- **`resolve`** — the chat itself produced the answer; no further branching needed. Server synthesizes a chosen branch on the node (label = first 60 chars of your chat_summary). Future drilling chains off that synthetic branch.
+- **`resolve`** — the chat itself produced the answer; no further branching needed. Server synthesizes a chosen branch on the node (label = first 60 chars of your chat_summary) and sets `chosen_branch_ids = [synth_id]`. Future drilling chains off that synthetic branch.
 
 `chat_id` is a UUID YOU generate per chat (e.g. `uuid.uuid4().hex`). Used for idempotency: if CC's transport retries the call, the server returns success without re-mutating. **Use the same chat_id on retry; never roll a new one for the same chat.**
 
@@ -137,7 +143,7 @@ Flow:
    - `stop_here` — user approves, no follow-up. Server has ended the session. Point user at the export.
    - `create_plan` — user approves, wants a plan first. `chain_markdown` is the full chosen-path recap. Use it to write a detailed implementation plan (markdown doc, ordered tasks, file-level breakdown). Server has ended the session.
    - `implement_now` — user approves, wants code now. `chain_markdown` is the full recap. Start coding immediately. Server has ended the session.
-   - `continue_grill` — user wants more grilling. `chosen_branch_id` is the synthetic continuation branch on the summary node; `note` (if set) is their direction. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_id>, depth=...)` to resume — END TURN.
+   - `continue_grill` — user wants more grilling. `chosen_branch_ids[0]` is the synthetic continuation branch on the summary node; `note` (if set) is their direction. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_ids[0]>, depth=...)` to resume — END TURN.
 4. Always point the user at the markdown export when the session ends: `http://127.0.0.1:7878/export/<session_id>.md`.
 
 The `summary` arg to `present_summary` should be a substantive markdown recap — headings, bullets, the actual chain of decisions. The card has breathing room (480px wide, scrollable body); use it. The summary is what the user reads to decide between the four verdicts, so make it actually useful.
@@ -170,8 +176,8 @@ present_branches(
 # Channel wakes Claude with:
 #   <channel source="grill-cheese" session_id="ab12cd34" node_id="n1" seq="0">
 #   {"session_id":"ab12cd34","node_id":"n1","seq":0,
-#    "actions":[{"node_id":"n1","chosen_branch_id":"b2",
-#                "chosen_branch_label":"Usage-based","action":"next"}]}
+#    "actions":[{"node_id":"n1","chosen_branch_ids":["b2"],
+#                "chosen_branch_labels":["Usage-based"],"action":"next"}]}
 #   </channel>
 # Track last_seen_seq=0. Drill into the dependent decision:
 
@@ -186,9 +192,10 @@ present_branches(
 → {node_id: "n2", instruction: "TURN_OVER. ..."}
 # END TURN.
 
-# ... user types in "Other": "actually I haven't decided on Stripe yet — ask me about payment processor first" ...
-# Channel wakes Claude with seq=1, action=other, note=...
-# user redirected via free text — drop the metering question, push the upstream one
+# ... user types into the always-visible textarea: "actually I haven't decided on Stripe yet — ask me about payment processor first" ...
+# Channel wakes with seq=1, action=next; chosen_branch_labels carries the
+# user_authored synth branch (label = first 60ch of typed text), and `note`
+# carries the full text. Treat as a redirect:
 present_branches(
   session_id="ab12cd34",
   question="Stripe, Paddle, or roll your own?",
@@ -196,6 +203,27 @@ present_branches(
 )
 → {node_id: "n3", instruction: "TURN_OVER. ..."}
 # END TURN.
+
+# Multi-mode example (set pick):
+present_branches(
+  session_id="ab12cd34",
+  parent_node_id="n3",
+  parent_branch_id="b_stripe",
+  depth=2,
+  multi_select=True,
+  question="Which compliance concerns apply?",
+  reasoning="Multiple concerns can apply at once; the implementation surface is the union.",
+  branches=[
+    {"label": "PCI DSS", "rationale": "Card data path", "is_recommended": True},
+    {"label": "EU VAT", "rationale": "Selling in EU", "is_recommended": True},
+    {"label": "SOC2", "rationale": "Required by enterprise procurement"},
+    {"label": "GDPR DSR", "rationale": "Customer data deletion endpoints"},
+  ],
+)
+→ {node_id: "n4", instruction: "TURN_OVER. ..."}
+# END TURN. ★ branches (PCI DSS, EU VAT) pre-checked. User can submit
+# immediately or toggle. Channel will deliver:
+#   actions: [{node_id:"n4", chosen_branch_ids:[...], chosen_branch_labels:[...], action:"next"}]
 
 # ... many turns later, user clicks "wrap up" in toolbar ...
 # Channel wakes with action=stop on node n7. Push verdict card:
@@ -216,4 +244,4 @@ present_summary(
 
 ## Reminder on style
 
-You are *grilling*, not *teaching*. The user has the brief — you're stressing it. Do not summarise their plan back to them. Do not be polite about weak parts. Each question should make them think "huh, I hadn't decided that yet." Recommendations should be honest, not safe. When the user types free text in "Other", treat it as the most informative signal in the session — it tells you exactly what their mental model is doing.
+You are *grilling*, not *teaching*. The user has the brief — you're stressing it. Do not summarise their plan back to them. Do not be polite about weak parts. Each question should make them think "huh, I hadn't decided that yet." Recommendations should be honest, not safe. When the user types free text (synth `user_authored` branch in `chosen_branch_labels` / `note`), treat it as the most informative signal in the session — it tells you exactly what their mental model is doing.

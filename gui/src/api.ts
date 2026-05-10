@@ -2,7 +2,6 @@ import { useStore } from "./store";
 
 export type ActionKind =
   | "next"
-  | "other"
   | "stop"
   | "chat"
   | "stop_here"
@@ -10,17 +9,33 @@ export type ActionKind =
   | "implement_now"
   | "continue_grill";
 
+export interface ActionOpts {
+  // plural pick set for action=next (radio = length 1, multi = ≥1)
+  branch_ids?: string[];
+  // single-id scope for action=chat (chat-on-row)
+  branch_id?: string;
+  // typed text — server synthesizes a user_authored Branch on next
+  note?: string;
+}
+
 export async function postAction(
   session_id: string,
   node_id: string,
   action: ActionKind,
-  branch_id?: string,
-  note?: string
+  opts?: ActionOpts
 ): Promise<void> {
+  const body = {
+    session_id,
+    node_id,
+    action,
+    branch_ids: opts?.branch_ids ?? [],
+    branch_id: opts?.branch_id,
+    note: opts?.note,
+  };
   const res = await fetch("/actions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ session_id, node_id, action, branch_id, note }),
+    body: JSON.stringify(body),
   });
   if (res.status === 409) {
     let body: { err?: string } = {};

@@ -42,8 +42,8 @@ def _make_event() -> dict:
             "actions": [
                 {
                     "node_id": "n7",
-                    "chosen_branch_id": "b2",
-                    "chosen_branch_label": "Usage-based",
+                    "chosen_branch_ids": ["b2"],
+                    "chosen_branch_labels": ["Usage-based"],
                     "note": None,
                     "action": "next",
                     "chain_markdown": None,
@@ -96,7 +96,7 @@ async def test_emit_writes_jsonrpc_notification():
     assert body["session_id"] == "abc123"
     assert body["node_id"] == "n7"
     assert body["seq"] == 5
-    assert body["actions"][0]["chosen_branch_label"] == "Usage-based"
+    assert body["actions"][0]["chosen_branch_labels"] == ["Usage-based"]
     meta = inner.params["meta"]
     assert meta == {"session_id": "abc123", "node_id": "n7", "seq": "5"}, meta
     print("[1] emit writes one JSONRPCNotification with channel method + body + meta — PASS")

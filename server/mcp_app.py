@@ -81,11 +81,17 @@ async def present_branches(
     parent_branch_id: Optional[str] = None,
     depth: int = 0,
     implicit: bool = False,
+    multi_select: bool = False,
 ) -> dict:
     """Push a decision node to the GUI. Returns immediately with {node_id, instruction}.
 
     Each branch is {label, rationale?, is_recommended?}. 2-4 branches.
-    Mark exactly one branch is_recommended: true.
+
+    Single-mode (default): mark exactly one branch is_recommended: true.
+    Multi-mode (multi_select=True): user picks a SET via checkboxes + Submit.
+    Mark every branch you'd recommend (zero or more) — GUI auto-checks all
+    ★ branches on render. Use multi_select for questions that genuinely
+    admit multiple simultaneous picks ("which of these concerns matter?").
 
     After this call, your turn MUST end. The `instruction` field in the result
     spells it out — channels (notifications/claude/channel) will wake you with
@@ -114,6 +120,7 @@ async def present_branches(
         parent_branch_id=parent_branch_id,
         depth=depth,
         implicit=implicit,
+        multi_select=multi_select,
     )
     await store.broadcast(
         session_id,
@@ -170,8 +177,8 @@ async def present_summary(
       - implement_now  -> approve, start coding immediately.
                           Server auto-ends. Result carries chain_markdown.
       - continue_grill -> keep grilling. Optional note carries user's
-                          redirect. Result has chosen_branch_id pointing to
-                          a synthetic continuation branch — pass it as
+                          redirect. Result has chosen_branch_ids[0] pointing
+                          to a synthetic continuation branch — pass it as
                           parent_branch_id on your next present_branches.
 
     `summary` is markdown. Render breathing room — multi-paragraph, bullets,
@@ -247,8 +254,8 @@ async def record_implicit_decision(
         implicit=True,
     )
     # mark the synthetic branch chosen so chosen-path walk picks it up
-    node.chosen_branch_id = branch.id
-    # add_node persisted before chosen_branch_id was set — re-persist so the
+    node.chosen_branch_ids = [branch.id]
+    # add_node persisted before chosen_branch_ids was set — re-persist so the
     # mutation lands on disk for rehydration.
     s_persist = store.get(session_id)
     if s_persist:

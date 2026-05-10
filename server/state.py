@@ -26,7 +26,7 @@ from .schemas import (
 MAX_RING = 5000  # per-session SSE replay buffer
 DEBOUNCE_SECONDS = 0.75  # idle window before flushing buffered clicks
 TERMINAL_ACTIONS = {
-    "next", "other", "stop", "chat",
+    "next", "stop", "chat",
     "stop_here", "create_plan", "implement_now", "continue_grill",
 }
 # subset that auto-end the session server-side after flush
@@ -172,6 +172,7 @@ class Store:
         implicit: bool = False,
         kind: Optional[str] = None,
         summary_body: Optional[str] = None,
+        multi_select: bool = False,
     ) -> Node:
         s = self.sessions[sid]
         node_id = uuid.uuid4().hex[:10]
@@ -190,6 +191,7 @@ class Store:
             created_at=time.time(),
             kind=kind,
             summary_body=summary_body,
+            multi_select=multi_select,
         )
         s.nodes[node_id] = node
         if s.root_node_id is None:
@@ -440,59 +442,65 @@ class Store:
                 is_recommended=False,
             )
             node.branches.append(cont)
-            node.chosen_branch_id = cont.id
+            node.chosen_branch_ids = [cont.id]
             return AskBranchesResult(
                 node_id=action.node_id,
-                chosen_branch_id=cont.id,
-                chosen_branch_label=cont.label,
+                chosen_branch_ids=[cont.id],
+                chosen_branch_labels=[cont.label],
                 note=action.note,
                 action="continue_grill",
             )
 
         if action.action == "next":
-            if not action.branch_id:
+            chosen_ids: list[str] = []
+            chosen_labels: list[str] = []
+            for bid in action.branch_ids:
+                if bid in node.removed_branch_ids:
+                    return None
+                b = next((x for x in node.branches if x.id == bid), None)
+                if b is None:
+                    return None
+                chosen_ids.append(b.id)
+                chosen_labels.append(b.label)
+            # synth-branch path: typed text becomes a user_authored Branch on
+            # the node and is included in the chosen set on the same submit.
+            note = (action.note or "").strip()
+            if note:
+                synth = Branch(
+                    label=note[:60],
+                    rationale=note,
+                    is_recommended=False,
+                    user_authored=True,
+                )
+                node.branches.append(synth)
+                chosen_ids.append(synth.id)
+                chosen_labels.append(synth.label)
+            # min=1: must have at least one branch_id OR non-empty note
+            if not chosen_ids:
                 return None
-            # cannot pick a chat-removed branch
-            if action.branch_id in node.removed_branch_ids:
-                return None
-            chosen = next(
-                (b for b in node.branches if b.id == action.branch_id), None
-            )
-            if chosen is None:
-                return None
-            node.chosen_branch_id = chosen.id
+            node.chosen_branch_ids = chosen_ids
             return AskBranchesResult(
                 node_id=action.node_id,
-                chosen_branch_id=chosen.id,
-                chosen_branch_label=chosen.label,
+                chosen_branch_ids=chosen_ids,
+                chosen_branch_labels=chosen_labels,
                 note=action.note,
                 action="next",
             )
 
-        if action.action == "other":
-            if not action.note:
-                return None
-            node.user_note = action.note
-            return AskBranchesResult(
-                node_id=action.node_id,
-                note=action.note,
-                action="other",
-            )
-
         if action.action == "chat":
-            chosen = None
+            scoped = None
             if action.branch_id:
                 if action.branch_id in node.removed_branch_ids:
                     return None  # cannot chat about a removed branch
-                chosen = next(
+                scoped = next(
                     (b for b in node.branches if b.id == action.branch_id), None
                 )
-                if chosen is None:
+                if scoped is None:
                     return None
             return AskBranchesResult(
                 node_id=action.node_id,
-                chosen_branch_id=chosen.id if chosen else None,
-                chosen_branch_label=chosen.label if chosen else None,
+                chat_branch_id=scoped.id if scoped else None,
+                chat_branch_label=scoped.label if scoped else None,
                 action="chat",
             )
         return None
@@ -527,7 +535,7 @@ class Store:
           - redirect: node.redirected = True. Synthesize a 'redirect' branch
                       with first 60 chars of summary as label. Return its id.
           - resolve:  synthesize a chosen branch (label = first 60 chars of
-                      summary) and set chosen_branch_id.
+                      summary) and set chosen_branch_ids = [synth_id].
 
         On success: appends ChatBlock, unlocks node for refine/resolve,
         resumes session (status -> active).
@@ -596,7 +604,7 @@ class Store:
             )
             node.branches.append(redir)
             redirect_branch_id = redir.id
-            # do NOT set chosen_branch_id — chosen means "user picked"; redirect
+            # do NOT set chosen_branch_ids — chosen means "user picked"; redirect
             # means "abandoned via chat". Tree wiring uses the synthesized
             # branch's child_node_id once a follow-up node hangs off it.
         elif outcome == "resolve":
@@ -609,7 +617,7 @@ class Store:
                 is_recommended=True,
             )
             node.branches.append(resolved)
-            node.chosen_branch_id = resolved.id
+            node.chosen_branch_ids = [resolved.id]
 
         # log the chat
         node.chats.append(
@@ -641,9 +649,10 @@ class Store:
     def _build_chain_md(self, session: Session) -> str:
         """Render the chosen-path chain as markdown for create_plan / implement_now.
 
-        Walks from root following chosen branches (Node.chosen_branch_id).
-        For redirected nodes, follows the parent-branch wiring of the next
-        node since the chatted node has no chosen branch.
+        Walks from root following chosen branches (Node.chosen_branch_ids[0]
+        as canonical next-hop). For multi-mode nodes, all picks render in the
+        Chose: line. Redirected nodes follow the parent-branch wiring of the
+        next node since the chatted node has no chosen branch.
         """
         title = session.title or session.brief[:80]
         iso = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(session.started_at))
@@ -672,8 +681,8 @@ class Store:
                     lines.append("")
                     lines.append(n.summary_body)
                 lines.append("")
-                chosen = _chosen_branch(n)
-                node_id = chosen.child_node_id if chosen else None
+                chosen_list = _chosen_branches(n)
+                node_id = chosen_list[0].child_node_id if chosen_list else None
                 depth += 1
                 continue
             h = "#" * (depth + 2)
@@ -685,20 +694,26 @@ class Store:
             for c in n.chats:
                 lines.append("")
                 lines.append(f"> **Chat ({c.outcome}):** {c.summary}")
-            chosen = _chosen_branch(n)
-            if chosen:
+            chosen_list = _chosen_branches(n)
+            if chosen_list:
                 lines.append("")
-                lines.append(f"**Chose:** {chosen.label}")
-                if chosen.rationale:
-                    lines.append(f"_{chosen.rationale}_")
-            if n.user_note:
-                lines.append("")
-                lines.append(f"**Note:** {n.user_note}")
+                if len(chosen_list) == 1:
+                    c = chosen_list[0]
+                    tag = " *[typed]*" if c.user_authored else ""
+                    lines.append(f"**Chose:** {c.label}{tag}")
+                    if c.rationale and not c.user_authored:
+                        lines.append(f"_{c.rationale}_")
+                else:
+                    parts = [
+                        f"{c.label}" + (" *[typed]*" if c.user_authored else "")
+                        for c in chosen_list
+                    ]
+                    lines.append(f"**Chose:** {', '.join(parts)}")
             lines.append("")
-            # advance: prefer chosen branch's child; fall back to first child
-            # that exists (handles redirect — chatted node has no chosen, but
-            # one of its branches still has a child_node_id).
-            next_id = chosen.child_node_id if chosen else None
+            # advance: prefer first chosen branch's child; fall back to first
+            # child that exists (handles redirect — chatted node has no chosen,
+            # but one of its branches still has a child_node_id).
+            next_id = chosen_list[0].child_node_id if chosen_list else None
             if next_id is None:
                 for b in n.branches:
                     if b.child_node_id:
@@ -840,10 +855,23 @@ class Store:
                 pass
 
 
+def _chosen_branches(n: Node) -> list[Branch]:
+    """All chosen Branch objs, in pick order. Plural is the truth — radio
+    mode just has length 1."""
+    by_id = {b.id: b for b in n.branches}
+    out: list[Branch] = []
+    for bid in n.chosen_branch_ids:
+        b = by_id.get(bid)
+        if b is not None:
+            out.append(b)
+    return out
+
+
 def _chosen_branch(n: Node) -> Optional[Branch]:
-    if not n.chosen_branch_id:
-        return None
-    return next((b for b in n.branches if b.id == n.chosen_branch_id), None)
+    """Back-compat: first chosen branch (or None). Use _chosen_branches when
+    multi-pick matters."""
+    cl = _chosen_branches(n)
+    return cl[0] if cl else None
 
 
 store = Store()

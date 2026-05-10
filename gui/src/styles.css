@@ -615,6 +615,38 @@ body,
   gap: 6px;
   padding-left: 22px;
 }
+/* multi-mode pre-submit: row checked but not yet submitted */
+.gc-branch.state-checked {
+  border-color: var(--gc-accent);
+  background: rgba(132, 212, 179, 0.04);
+}
+.gc-branch.state-checked .gc-branch-glyph {
+  color: var(--gc-accent);
+}
+/* synth user_authored branch — typed-text turned into a Branch */
+.gc-branch.user-authored {
+  border-style: dashed;
+  border-color: var(--gc-fg-dim);
+}
+.gc-typed-tag {
+  margin-left: 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--gc-fg-dim);
+}
+/* shared submit row at the bottom of a node (single + multi mode) */
+.gc-submit-row {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+.gc-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 /* chat banner — chat outcome rendered between reasoning and branches */
 .gc-chat-banner {

@@ -17,9 +17,9 @@ Claude Code │  │ /mcp            │  │ /hooks /actions │   │
             └─────────────────────────────────────────────┘
 ```
 
-- **MCP** is the spine. `present_branches(question, branches[])` returns immediately with a `node_id`; `wait_for_action(node_id)` long-polls until the user picks a branch (`action=next`), types free text in the "Other" box (`action=other`, `note=<text>`), or hits stop (`action=stop`). On transport timeout it returns `action=skip` — re-poll the same `node_id`.
+- **MCP** is the spine. `present_branches(question, branches[], multi_select?)` returns immediately with a `node_id`; the **stdio shim** (`server/shim.py`) bridges committed actions back via `notifications/claude/channel`. The user picks one branch (`action=next` with `branch_ids: [b]`), checks several in multi-mode (`branch_ids: [b1,b2,...]`), types free text (server synthesizes a `user_authored` Branch via `next + note`), pauses to chat (`action=chat`), or wraps up (`action=stop`). `wait_for_action` is gone — channels deliver actions push-style.
 - **Hooks** are ambient: every `PreToolUse` / `PostToolUse` from Claude is POSTed to `/hooks` and rendered next to the live decision node so you see when Claude grepped vs hallucinated.
-- **GUI** is React + xyflow + dagre. Pail-aware: dim stale subtrees, branch states (considered / chosen / rejected), free-text "Other" answers stored on the node, implicit-decision lane.
+- **GUI** is React + xyflow + dagre. Pail-aware: dim stale subtrees, branch states (considered / chosen / removed-via-chat), typed answers materialise as `user_authored` branches on the node, implicit-decision lane.
 
 ## Install
 
@@ -84,15 +84,16 @@ Vite proxies `/events`, `/actions`, `/sessions`, `/snapshot`, `/export` to the s
 | state | meaning | how set |
 |-------|---------|---------|
 | considered | default | initial |
-| chosen | user picked this branch (commits the node) | user clicks `pick →` |
-| rejected | user tagged it as do-not-resurface | user clicks `reject` |
+| chosen | user picked this branch (commits the node) | radio: `pick →`; multi: checkbox + `submit` |
+| removed | chat outcome dropped this option | `apply_chat_result(refine, removes=[id])` |
+| user_authored | synth Branch from typed text | always-visible textarea + submit |
 
-A node may also carry a `user_note` set when the user picks **Other / type your answer** instead of clicking a branch. The note is broadcast to all clients and included in the markdown export.
+In multi-mode (`multi_select=True`), checkboxes replace radio; ★ branches pre-checked; user submits the set in one click.
 
 ## Caveats / known seams
 
-- MCP `wait_for_action` blocks for up to `timeout_seconds` (default 50s, kept under CC's ~60s MCP HTTP timeout). On timeout it returns `action=skip`; the skill long-polls the same `node_id`.
-- Hook script is best-effort; 1.5s hard kill. If server is down, hooks silently no-op — Claude is unaffected.
+- Channels are stdio-only — the shim is the only place that emits `notifications/claude/channel`. CC must launch with `--dangerously-load-development-channels server:grill-cheese` (CC ≥ 2.1.80).
+- Hook script is best-effort; 1s hard kill. If server is down, hooks silently no-op — Claude is unaffected.
 - One global server, multiple Claude sessions. Switch in toolbar dropdown when more than one is live.
 
 ## Layout

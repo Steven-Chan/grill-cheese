@@ -68,9 +68,10 @@ function CanvasInner() {
     const visibleIds = new Set(visible.map((n) => n.id));
     for (const n of visible) {
       const removedSet = new Set(n.removed_branch_ids ?? []);
+      const chosenSet = new Set(n.chosen_branch_ids ?? []);
       for (const b of n.branches) {
         if (b.child_node_id && visibleIds.has(b.child_node_id)) {
-          const isChosenPath = b.id === n.chosen_branch_id;
+          const isChosenPath = chosenSet.has(b.id);
           const isRemoved = removedSet.has(b.id);
           const isRedirectEdge = !!n.redirected;
           flowEdges.push({

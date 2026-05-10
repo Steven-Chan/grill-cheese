@@ -21,15 +21,27 @@ from server.state import store, DEBOUNCE_SECONDS
 from server.schemas import Branch, ChatOps, GuiAction
 
 
-def push_click(sid: str, node_id: str, action: str, branch_id: str | None = None, note: str | None = None):
+def push_click(
+    sid: str,
+    node_id: str,
+    action: str,
+    branch_ids: list[str] | None = None,
+    branch_id: str | None = None,
+    note: str | None = None,
+):
     a = GuiAction(
-        session_id=sid, node_id=node_id, action=action, branch_id=branch_id, note=note
+        session_id=sid,
+        node_id=node_id,
+        action=action,
+        branch_ids=branch_ids or [],
+        branch_id=branch_id,
+        note=note,
     )
     rec = store.apply_action(a)
     assert rec is not None, f"apply_action returned None for {action}"
     ok = store.enqueue_action(sid, node_id, rec)
     assert ok, "enqueue rejected"
-    if action in ("next", "other", "stop", "chat"):
+    if action in ("next", "stop", "chat"):
         store.flush_now(sid, node_id)
 
 
@@ -79,12 +91,13 @@ async def main():
         print("OK — empty buffer waits without flushing")
 
     # 3. terminal click flushes immediately
-    push_click(sid, nid, "next", branch_id="b2")
+    push_click(sid, nid, "next", branch_ids=["b2"])
     await asyncio.wait_for(ev.wait(), timeout=1.0)
     batch = store.get_actions(nid)
     assert batch is not None and len(batch) == 1
-    assert batch[0].action == "next" and batch[0].chosen_branch_id == "b2"
-    assert node.chosen_branch_id == "b2", "next must set node.chosen_branch_id"
+    assert batch[0].action == "next" and batch[0].chosen_branch_ids == ["b2"]
+    assert batch[0].chosen_branch_labels == ["B"]
+    assert node.chosen_branch_ids == ["b2"], "next must set node.chosen_branch_ids"
     print(f"OK — terminal flushed batch={[a.action for a in batch]}")
 
     # 4. idempotent
@@ -93,7 +106,7 @@ async def main():
     print("OK — idempotent on re-poll")
 
     # 5. locked: further enqueue rejected
-    locked_a = GuiAction(session_id=sid, node_id=nid, action="next", branch_id="b1")
+    locked_a = GuiAction(session_id=sid, node_id=nid, action="next", branch_ids=["b1"])
     rec = store.apply_action(locked_a)
     assert rec is None, "apply_action should reject locked node"
     print("OK — flushed node locked")
@@ -118,7 +131,7 @@ async def main():
     push_click(sid, nid2, "chat")
     store.pause_session(sid, nid2, None)
     assert store.is_flushed(nid2), "chat must flush + lock node"
-    assert node2.chosen_branch_id is None, "chat must not set chosen"
+    assert node2.chosen_branch_ids == [], "chat must not set chosen"
 
     # 6. refine: add 1, remove c1
     chat_id = uuid.uuid4().hex
@@ -176,7 +189,7 @@ async def main():
     print(f"OK — unknown branch id rejected: {errbad}")
 
     # 11. picking a chat-removed branch fails (HTTP layer would return 409)
-    bad_pick = GuiAction(session_id=sid, node_id=nid2, action="next", branch_id="c1")
+    bad_pick = GuiAction(session_id=sid, node_id=nid2, action="next", branch_ids=["c1"])
     rec_bad = store.apply_action(bad_pick)
     assert rec_bad is None, "picking a removed branch must fail"
     print("OK — pick on removed branch rejected (would be 409 over HTTP)")
@@ -228,10 +241,71 @@ async def main():
         ops=None,
     )
     assert err_v is None and n_v is not None
-    assert n_v.chosen_branch_id is not None, "resolve must set chosen_branch_id"
-    chosen = next(b for b in n_v.branches if b.id == n_v.chosen_branch_id)
+    assert n_v.chosen_branch_ids, "resolve must set chosen_branch_ids"
+    chosen = next(b for b in n_v.branches if b.id == n_v.chosen_branch_ids[0])
     assert chosen.label, "synthesized branch must have a label"
     print(f"OK — resolve synthesized chosen branch: '{chosen.label}'")
+
+    # ---- multi-mode + synth user_authored branch ----
+    node5 = store.add_node(
+        sid=sid,
+        question="Pick all that apply?",
+        reasoning="multi smoke",
+        branches=[
+            Branch(id="m1", label="alpha", is_recommended=True),
+            Branch(id="m2", label="beta", is_recommended=True),
+            Branch(id="m3", label="gamma"),
+        ],
+        parent_node_id=None,
+        parent_branch_id=None,
+        depth=0,
+        multi_select=True,
+    )
+    nid5 = node5.id
+    # user submits 2 checks + typed text → server synthesizes a 3rd branch.
+    push_click(
+        sid,
+        nid5,
+        "next",
+        branch_ids=["m1", "m3"],
+        note="extra context the user typed",
+    )
+    batch5 = store.get_actions(nid5)
+    assert batch5 and len(batch5) == 1
+    rec5 = batch5[0]
+    assert rec5.action == "next"
+    assert len(rec5.chosen_branch_ids) == 3, f"expected 3 picks (2 + synth), got {len(rec5.chosen_branch_ids)}"
+    assert rec5.chosen_branch_ids[:2] == ["m1", "m3"]
+    assert rec5.chosen_branch_labels[:2] == ["alpha", "gamma"]
+    synth_id = rec5.chosen_branch_ids[2]
+    synth = next(b for b in node5.branches if b.id == synth_id)
+    assert synth.user_authored is True, "synth branch must be user_authored"
+    assert synth.rationale == "extra context the user typed"
+    assert rec5.chosen_branch_labels[2] == synth.label
+    print(f"OK — multi-mode submit synthesized branch '{synth.label}' alongside picks")
+
+    # min=1: empty submit (no picks, no note) is rejected
+    node6 = store.add_node(
+        sid=sid,
+        question="Empty submit?",
+        reasoning="min=1 smoke",
+        branches=[Branch(id="z1", label="x")],
+        parent_node_id=None,
+        parent_branch_id=None,
+        depth=0,
+        multi_select=True,
+    )
+    empty = GuiAction(session_id=sid, node_id=node6.id, action="next", branch_ids=[], note="   ")
+    rec_empty = store.apply_action(empty)
+    assert rec_empty is None, "empty multi-submit must be rejected"
+    print("OK — empty multi-submit rejected (min=1)")
+
+    # action=other no longer in the literal — Pydantic must reject
+    try:
+        GuiAction(session_id=sid, node_id=node6.id, action="other", note="hi")
+        raise AssertionError("action=other should no longer validate")
+    except Exception:
+        print("OK — action=other rejected by schema literal")
 
     print("\nALL SMOKE TESTS PASSED")
 

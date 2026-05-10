@@ -70,7 +70,7 @@ export function SummaryNode({ data }: NodeProps) {
     if (!sid) return;
     const note = action === "continue_grill" ? noteText.trim() || undefined : undefined;
     try {
-      await postAction(sid, node.id, action as ActionKind, undefined, note);
+      await postAction(sid, node.id, action as ActionKind, { note });
     } catch (e) {
       console.error(e);
     }

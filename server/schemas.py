@@ -18,6 +18,8 @@ class Branch(BaseModel):
     label: str
     rationale: str = ""
     is_recommended: bool = False
+    # synthesized from typed-text submit (action=next + note). GUI tags it.
+    user_authored: bool = False
     child_node_id: Optional[str] = None
 
 
@@ -41,6 +43,10 @@ class ChatOps(BaseModel):
 
 
 class Node(BaseModel):
+    # extra=ignore so old session JSONs missing dropped fields (user_note,
+    # chosen_branch_id) load without crashing during rehydrate.
+    model_config = {"extra": "ignore"}
+
     id: str
     parent_node_id: Optional[str] = None
     parent_branch_id: Optional[str] = None
@@ -50,14 +56,16 @@ class Node(BaseModel):
     depth: int = 0
     implicit: bool = False  # decision Claude made silently, surfaced post-hoc
     created_at: float = 0.0
-    # free-text answer when user picks "Other" instead of a branch
-    user_note: Optional[str] = None
+    # render mode: false=radio (single pick), true=checkboxes (set pick)
+    multi_select: bool = False
     # node kind: "decision" (default) or "summary" (terminal verdict card)
     kind: Optional[NodeKind] = None
     # markdown body, populated only when kind == "summary"
     summary_body: Optional[str] = None
-    # picked branch (single source of truth for chosen state)
-    chosen_branch_id: Optional[str] = None
+    # picked branches (plural-only — radio = list of length 1; multi = set).
+    # Synth user_authored branches from typed text are appended to .branches
+    # AND included here on the same submit.
+    chosen_branch_ids: list[str] = Field(default_factory=list)
     # chat-removed branches; soft delete, branch entries stay in branches[]
     removed_branch_ids: list[str] = Field(default_factory=list)
     # accumulating chat history applied to this node
@@ -114,25 +122,32 @@ class SseEvent(BaseModel):
 
 # ---- GUI -> server actions ----
 #
-# `next`           = user clicked one of the offered branches; that branch becomes
-#                    chosen and the action commits so wait_for_action returns.
-# `other`          = user typed free text instead of clicking a branch; `note`
-#                    carries the text. Commits the action.
+# `next`           = user submitted picks. `branch_ids` carries the chosen
+#                    set (length 1 in radio/single-mode, ≥1 in multi-mode).
+#                    `note` carries optional typed text — server synthesizes
+#                    a user_authored Branch from it and appends to the
+#                    submission. Min=1: must have ≥1 branch_id OR non-empty
+#                    note. (action=other was killed; typed text now goes
+#                    through next + note.)
 # `chat`           = user wants to PAUSE the grill and chat about this node
-#                    in Claude Code. Bare click — no note. `branch_id` set when
-#                    chat is scoped to a specific branch. Commits + server
-#                    marks session paused. Skill must NOT call end_session;
-#                    next present_branches on the same session auto-resumes.
+#                    in Claude Code. Bare click — no note. `branch_id` set
+#                    when chat is scoped to a specific branch (single id,
+#                    not a set: chat is per-row). Commits + server marks
+#                    session paused.
 # `stop`           = user is done; commits a stop action (toolbar wrap-up).
 # (mark_rejected / unmark dropped — chat ops own removal now)
 
 class GuiAction(BaseModel):
     session_id: str
     node_id: str
+    # plural pick set for action=next. May be empty when only `note` is set
+    # (typed text → synth branch). Server rejects next with both empty.
+    branch_ids: list[str] = Field(default_factory=list)
+    # single-id scope for action=chat (chat-on-row). Unused by next.
     branch_id: Optional[str] = None
     note: Optional[str] = None
     action: Literal[
-        "next", "other", "stop", "chat",
+        "next", "stop", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ]
 
@@ -148,23 +163,31 @@ class AskBranchesInput(BaseModel):
     branches: list[Branch]
     depth: int = 0
     implicit: bool = False
+    # render mode: false=radio (single pick), true=checkboxes. Multi-★ is
+    # allowed; GUI auto-checks all ★ on render.
+    multi_select: bool = False
 
 
 class AskBranchesResult(BaseModel):
     node_id: str
-    chosen_branch_id: Optional[str] = None
-    # Echo of the chosen branch's label so the skill never has to map the
-    # server-assigned chosen_branch_id back to the option it sent. Set
-    # whenever chosen_branch_id is set.
-    chosen_branch_label: Optional[str] = None
+    # plural-only chosen state. Length 1 for radio, ≥1 for multi. Includes
+    # synth user_authored branches when typed text accompanied the submit.
+    chosen_branch_ids: list[str] = Field(default_factory=list)
+    # Label echo so the skill never has to map ids back to its options.
+    # Same length + order as chosen_branch_ids.
+    chosen_branch_labels: list[str] = Field(default_factory=list)
     note: Optional[str] = None
     action: Literal[
-        "next", "other", "stop", "chat",
+        "next", "stop", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ] = "next"
     # full chosen-path markdown — set only on create_plan / implement_now
     # so model can drive plan-write or coding directly off this string
     chain_markdown: Optional[str] = None
+    # chat-only scope (per-row chat). Distinct field from chosen_* to keep
+    # the discriminated-union honest: chat result is never a "pick".
+    chat_branch_id: Optional[str] = None
+    chat_branch_label: Optional[str] = None
 
 
 # ---- claude code hook payload (subset we care about) ----

@@ -70,12 +70,13 @@ GUI actions and their server effect:
 
 | action            | commits the buffer? | side effect |
 |-------------------|---------------------|-------------|
-| `next`            | yes (`chosen_branch_id` set) | branch → `chosen`; demote prior chosen on same node |
-| `other`           | yes (`note` set)             | stores `user_note` on node |
-| `chat`            | yes (immediate flush)        | session paused, node locked |
+| `next`            | yes (`chosen_branch_ids` set, plural) | picks set on node; if `note` non-empty, server appends a synth `Branch(user_authored=True, label=note[:60])` to `node.branches` and includes its id in `chosen_branch_ids`. Min=1: must have ≥1 branch_id OR non-empty note. (Single-mode = list of length 1; multi-mode = ≥1.) |
+| `chat`            | yes (immediate flush)        | session paused, node locked. `branch_id` (singular) scopes per-row; result carries `chat_branch_id` / `chat_branch_label`. |
 | `stop`            | yes                          | summary card next, NOT end-of-session |
 | `stop_here` / `create_plan` / `implement_now` | yes (auto-end) | server ends session in `hooks.py:actions_endpoint` |
 | `continue_grill`  | yes                          | synthesizes branch on summary node, session continues |
+
+(`other` was killed in the multi-choice rewrite — typed text now flows through `next + note` and becomes a `user_authored` Branch on the node.)
 
 Buffered with 750ms idle window; terminal-class clicks bypass via `flush_now`. Flush assigns a per-session monotonic `seq` and emits `node_committed` SSE → shim → channel notification.
 
