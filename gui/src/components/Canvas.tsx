@@ -150,36 +150,26 @@ function CanvasInner() {
   }, [nodes, rf]);
 
   // auto-focus: pan to new pending node, keep current zoom.
-  // fires once per new pendingNodeId. measured dims live on xyflow's internal
-  // node (nodeLookup) — rf.getNode() reads the raw prop array which never gets
-  // measured. rf.getInternalNode() reads nodeLookup. rAF-poll until ready.
+  // gates on measuredSizes[pendingNodeId] so we read the post-measure
+  // (pass B) layout — earlier reads would land on the default-size pass A
+  // position, then layout shifts and viewport is left stuck on stale spot.
   useEffect(() => {
     if (!pendingNodeId) return;
     if (pendingNodeId === lastFocusedId.current) return;
-    let cancelled = false;
-    let raf = 0;
-    const tryFocus = () => {
-      if (cancelled) return;
-      const node = rf.getInternalNode(pendingNodeId);
-      const w = node?.measured?.width;
-      const h = node?.measured?.height;
-      if (!node || !w || !h) {
-        raf = requestAnimationFrame(tryFocus);
-        return;
-      }
-      lastFocusedId.current = pendingNodeId;
-      armProgrammaticMove();
-      rf.setCenter(node.position.x + w / 2, node.position.y + h / 2, {
-        duration: FOCUS_DURATION_MS,
-        zoom: rf.getZoom(),
-      });
-    };
-    tryFocus();
-    return () => {
-      cancelled = true;
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [pendingNodeId, rf]);
+    const sz = measuredSizes[pendingNodeId];
+    if (!sz) return; // wait — useMemo will re-layout once dims arrive
+    // advance focused-id before the !node guard, else node-removed races
+    // re-enter on every rfNodes recompute and re-arm programmaticMove,
+    // swallowing real user pans inside the safety window.
+    lastFocusedId.current = pendingNodeId;
+    const node = rfNodes.find((n) => n.id === pendingNodeId);
+    if (!node) return;
+    armProgrammaticMove();
+    rf.setCenter(node.position.x + sz.w / 2, node.position.y + sz.h / 2, {
+      duration: FOCUS_DURATION_MS,
+      zoom: rf.getZoom(),
+    });
+  }, [pendingNodeId, rfNodes, measuredSizes, rf]);
 
   // clear pending timer on unmount — stale timers across remounts would
   // reset programmaticMove at the wrong time and swallow a real user pan.
