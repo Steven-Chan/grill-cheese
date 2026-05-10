@@ -44,15 +44,19 @@ async def hooks_endpoint(request: Request) -> Response:
 
 
 async def actions_endpoint(request: Request) -> Response:
-    """POST from GUI: next / other / mark_rejected / unmark / stop / chat."""
+    """POST from GUI: next / other / mark_rejected / unmark / stop / chat.
+
+    Click flow: mutate node state immediately + broadcast node_updated, append
+    record to per-node buffer, reset 750ms idle timer. Terminal-class clicks
+    (next/other/stop/chat) trigger immediate flush. On flush the buffer is
+    handed to wait_for_action and the node is locked — further clicks 409.
+    """
     try:
         raw = await request.json()
         action = GuiAction.model_validate(raw)
     except Exception as e:
         return JSONResponse({"ok": False, "err": str(e)}, status_code=400)
 
-    # Validate commit-style actions surface a 400 if branch_id / note missing,
-    # so a buggy client doesn't silently leave the user waiting forever.
     if action.action == "next" and not action.branch_id:
         return JSONResponse(
             {"ok": False, "err": "next requires branch_id"}, status_code=400
@@ -62,26 +66,18 @@ async def actions_endpoint(request: Request) -> Response:
             {"ok": False, "err": "other requires note"}, status_code=400
         )
 
-    result = store.apply_action(action)
-    # Commit-style actions must surface a 400 if session/node lookup failed,
-    # else skill side stays stuck in wait_for_action with no error signal.
-    if result is None and action.action in ("next", "other", "chat", "stop"):
+    if store.is_flushed(action.node_id):
         return JSONResponse(
-            {"ok": False, "err": "invalid session_id or node_id"},
+            {"ok": False, "err": "node locked"}, status_code=409
+        )
+
+    record = store.apply_action(action)
+    if record is None:
+        return JSONResponse(
+            {"ok": False, "err": "invalid session_id, node_id, or branch_id"},
             status_code=400,
         )
-    committed = False
-    if result is not None and action.action in ("next", "other", "chat"):
-        # commit first so node mutations only persist on first-write
-        committed = store.set_action(action.node_id, result)
-        if committed:
-            store.apply_committed(action)
-    elif result is not None:
-        # stop: commit but no node mutation needed
-        committed = store.set_action(action.node_id, result)
 
-    # broadcast state mutation so all clients sync (mark_rejected/unmark
-    # mutated in apply_action; next/other mutated above only if committed)
     s = store.get(action.session_id)
     if s and action.node_id in s.nodes:
         await store.broadcast(
@@ -92,31 +88,32 @@ async def actions_endpoint(request: Request) -> Response:
                 "payload": s.nodes[action.node_id].model_dump(),
             },
         )
-    if committed and result is not None:
-        await store.broadcast(
-            action.session_id,
-            {
-                "type": "node_resolved",
-                "session_id": action.session_id,
-                "payload": result.model_dump(),
-            },
+
+    store.enqueue_action(action.session_id, action.node_id, record)
+
+    # chat: pause session immediately (preserves chat semantics for GUI banner).
+    if action.action == "chat":
+        _, changed = store.pause_session(
+            action.session_id, action.node_id, action.branch_id
         )
-    # chat commits also pause the session — separate broadcast so GUI can
-    # show "paused, chatting in CC" banner without conflating with stop/end.
-    if committed and action.action == "chat":
-        store.pause_session(action.session_id, action.node_id, action.branch_id)
-        await store.broadcast(
-            action.session_id,
-            {
-                "type": "session_paused",
-                "session_id": action.session_id,
-                "payload": {
-                    "node_id": action.node_id,
-                    "branch_id": action.branch_id,
+        if changed:
+            await store.broadcast(
+                action.session_id,
+                {
+                    "type": "session_paused",
+                    "session_id": action.session_id,
+                    "payload": {
+                        "node_id": action.node_id,
+                        "branch_id": action.branch_id,
+                    },
                 },
-            },
-        )
-    return JSONResponse({"ok": True, "committed": committed})
+            )
+
+    # Terminal-class clicks bypass the idle timer.
+    if action.action in ("next", "other", "stop", "chat"):
+        store.flush_now(action.session_id, action.node_id)
+
+    return JSONResponse({"ok": True, "queued": True})
 
 
 async def sessions_endpoint(request: Request) -> Response:

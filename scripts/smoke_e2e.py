@@ -1,37 +1,35 @@
-"""In-process smoke for the long-poll grill loop.
+"""In-process smoke for the buffered grill loop.
 
 Tests:
   1. present_branches returns immediately with node_id
-  2. wait_for_action times out cleanly when no user click (returns skip)
-  3. set_action commits → next wait_for_action returns the action
-  4. wait_for_action is idempotent — re-calling after commit returns same action
+  2. wait_for_action times out cleanly when no clicks (returns empty actions)
+  3. terminal click flushes immediately → wait_for_action returns batch
+  4. wait_for_action is idempotent — re-poll returns same batch
+  5. tagging clicks accumulate; idle flush returns full ordered list
+  6. flushed node is locked — further enqueue_action rejected
 """
 import asyncio
 
-from server.state import store
-from server.schemas import Branch, GuiAction, AskBranchesResult
+from server.state import store, DEBOUNCE_SECONDS
+from server.schemas import Branch, GuiAction
 
 
-async def fake_action_after(node_id: str, sid: str, branch_id: str, delay: float):
-    await asyncio.sleep(delay)
-    action = GuiAction(
-        session_id=sid,
-        node_id=node_id,
-        branch_id=branch_id,
-        action="next",
+def push_click(sid: str, node_id: str, action: str, branch_id: str | None = None, note: str | None = None):
+    a = GuiAction(
+        session_id=sid, node_id=node_id, action=action, branch_id=branch_id, note=note
     )
-    result = store.apply_action(action)
-    assert result is not None
-    committed = store.set_action(node_id, result)
-    assert committed, "expected first commit to succeed"
-    print(f"committed action node={node_id} → {result.action}")
+    rec = store.apply_action(a)
+    assert rec is not None, f"apply_action returned None for {action}"
+    ok = store.enqueue_action(sid, node_id, rec)
+    assert ok, "enqueue rejected"
+    if action in ("next", "other", "stop", "chat"):
+        store.flush_now(sid, node_id)
 
 
 async def main():
-    sid = store.new_session(brief="smoke long-poll").id
+    sid = store.new_session(brief="smoke buffered loop").id
     print(f"session={sid}")
 
-    # 1. push node
     branches = [
         Branch(id="b1", label="A", rationale="", is_recommended=True),
         Branch(id="b2", label="B", rationale=""),
@@ -45,38 +43,59 @@ async def main():
         parent_branch_id=None,
         depth=0,
     )
-    print(f"node={node.id}")
+    nid = node.id
+    print(f"node={nid}")
 
-    # 2. wait_for_action times out cleanly
-    ev = store.get_event(node.id)
+    # 2. timeout returns no actions
+    ev = store.get_event(nid)
     try:
-        await asyncio.wait_for(ev.wait(), timeout=0.3)
+        await asyncio.wait_for(ev.wait(), timeout=0.2)
         raise AssertionError("expected timeout")
     except asyncio.TimeoutError:
-        skip = store.get_action(node.id)
-        assert skip is None, "expected no action committed"
-        print("OK — short poll times out without commit")
+        assert store.get_actions(nid) is None
+        print("OK — empty buffer waits without flushing")
 
-    # 3. fake user action commits
-    asyncio.create_task(fake_action_after(node.id, sid, "b2", 0.1))
-    await asyncio.wait_for(ev.wait(), timeout=2.0)
-    a1 = store.get_action(node.id)
-    assert a1 is not None and a1.action == "next" and a1.chosen_branch_id == "b2"
-    print(f"OK — wait returns action={a1.action}")
+    # 3. terminal click flushes immediately
+    push_click(sid, nid, "next", branch_id="b2")
+    await asyncio.wait_for(ev.wait(), timeout=1.0)
+    batch = store.get_actions(nid)
+    assert batch is not None and len(batch) == 1
+    assert batch[0].action == "next" and batch[0].chosen_branch_id == "b2"
+    print(f"OK — terminal flushed batch={[a.action for a in batch]}")
 
     # 4. idempotent
-    a2 = store.get_action(node.id)
-    assert a2 == a1
+    again = store.get_actions(nid)
+    assert again == batch
     print("OK — idempotent on re-poll")
 
-    # 5. second commit ignored
-    again = store.set_action(
-        node.id, AskBranchesResult(node_id=node.id, action="stop")
+    # 6. locked: further enqueue rejected
+    locked_a = GuiAction(session_id=sid, node_id=nid, action="mark_rejected", branch_id="b1")
+    rec = store.apply_action(locked_a)
+    assert rec is None, "apply_action should reject locked node"
+    ok = store.enqueue_action(sid, nid, store.get_actions(nid)[0])  # placeholder; should be rejected
+    assert not ok, "enqueue should reject locked node"
+    print("OK — flushed node locked")
+
+    # 5. tagging accumulates; idle timer flushes
+    node2 = store.add_node(
+        sid=sid, question="Q2", reasoning="", branches=[
+            Branch(id="b3", label="C"), Branch(id="b4", label="D"),
+        ], parent_node_id=None, parent_branch_id=None, depth=0,
     )
-    assert not again, "expected second set_action to be ignored"
-    final = store.get_action(node.id)
-    assert final.action == "next", "first action should win"
-    print("OK — second commit ignored, first-write-wins")
+    nid2 = node2.id
+    push_click(sid, nid2, "mark_rejected", branch_id="b3")
+    push_click(sid, nid2, "unmark", branch_id="b3")
+    push_click(sid, nid2, "mark_rejected", branch_id="b4")
+    # not flushed yet
+    assert store.get_actions(nid2) is None
+    print(f"OK — {len(store._pending.get(nid2, []))} tagging clicks buffered, no flush yet")
+    # wait for idle flush
+    ev2 = store.get_event(nid2)
+    await asyncio.wait_for(ev2.wait(), timeout=DEBOUNCE_SECONDS + 0.5)
+    batch2 = store.get_actions(nid2)
+    assert batch2 is not None and len(batch2) == 3
+    assert [a.action for a in batch2] == ["mark_rejected", "unmark", "mark_rejected"]
+    print(f"OK — idle flush returned ordered batch={[a.action for a in batch2]}")
 
 
 if __name__ == "__main__":

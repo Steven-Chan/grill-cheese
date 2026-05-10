@@ -26,6 +26,7 @@ export function connectSse(sessionId: string | null) {
     "node_added",
     "node_updated",
     "node_resolved",
+    "node_committed",
     "hook_event",
   ]) {
     es.addEventListener(t, (e: MessageEvent) => handle(e.data));
@@ -69,6 +70,9 @@ function handle(raw: string) {
       break;
     case "node_resolved":
       s.setNodeResolved(ev.payload.node_id);
+      break;
+    case "node_committed":
+      s.setNodeCommitted(ev.payload.node_id);
       break;
     case "hook_event":
       s.appendHook(ev.payload as HookTrace);

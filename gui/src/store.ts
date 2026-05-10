@@ -17,6 +17,7 @@ interface State {
   addNode(n: DecisionNode): void;
   updateNode(n: DecisionNode): void;
   setNodeResolved(node_id: string): void;
+  setNodeCommitted(node_id: string): void;
   appendHook(trace: HookTrace): void;
   setSessions(s: SessionMeta[]): void;
   reset(): void;
@@ -62,6 +63,15 @@ export const useStore = create<State>((set) => ({
     set((s) => ({
       pendingNodeId: s.pendingNodeId === node_id ? null : s.pendingNodeId,
     })),
+  setNodeCommitted: (node_id) =>
+    set((s) => {
+      const n = s.nodes[node_id];
+      if (!n) return {};
+      return {
+        nodes: { ...s.nodes, [node_id]: { ...n, committed: true } },
+        pendingNodeId: s.pendingNodeId === node_id ? null : s.pendingNodeId,
+      };
+    }),
   appendHook: (trace) =>
     set((s) => {
       const key = trace.grill_node_id || "_unbound";

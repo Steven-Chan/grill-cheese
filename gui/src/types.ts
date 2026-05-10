@@ -20,6 +20,8 @@ export interface DecisionNode {
   implicit: boolean;
   created_at: number;
   user_note: string | null;
+  // set true after server flushes the click buffer — node locked, no more input
+  committed?: boolean;
 }
 
 export interface HookTrace {
@@ -53,4 +55,5 @@ export type SseEvent =
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
   | { type: "node_resolved"; session_id: string; payload: { node_id: string; chosen_branch_id?: string; chosen_branch_label?: string; note?: string; action: string } }
+  | { type: "node_committed"; session_id: string; payload: { node_id: string; actions: Array<{ node_id: string; chosen_branch_id?: string | null; chosen_branch_label?: string | null; note?: string | null; action: string }> } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };

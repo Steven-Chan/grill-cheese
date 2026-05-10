@@ -17,6 +17,8 @@ from .schemas import (
 )
 
 MAX_RING = 5000  # per-session SSE replay buffer
+DEBOUNCE_SECONDS = 0.75  # idle window before flushing buffered clicks
+TERMINAL_ACTIONS = {"next", "other", "stop", "chat"}
 
 
 class Store:
@@ -25,10 +27,19 @@ class Store:
         self.ring: dict[str, deque[dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=MAX_RING)
         )
-        # node_id -> committed action (idempotent: once set, wait_for_action returns it)
-        self._actions: dict[str, AskBranchesResult] = {}
-        # node_id -> Event signalling action arrival (lazy-created in get_event)
+        # node_id -> committed batch of actions (idempotent: once set,
+        # wait_for_action returns the same list)
+        self._actions: dict[str, list[AskBranchesResult]] = {}
+        # node_id -> in-progress buffer (filled by enqueue_action, drained on flush)
+        self._pending: dict[str, list[AskBranchesResult]] = {}
+        # node_id -> debounce timer handle (asyncio.TimerHandle from call_later)
+        self._timers: dict[str, Any] = {}
+        # node_ids whose buffer has been flushed → locked, reject further clicks
+        self._flushed: set[str] = set()
+        # node_id -> Event signalling buffer flushed (lazy-created in get_event)
         self._events: dict[str, asyncio.Event] = {}
+        # session_id -> Event signalling status change (pause/resume)
+        self._status_events: dict[str, asyncio.Event] = {}
         # SSE subscribers: session_id -> list[asyncio.Queue]
         self._subs: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         # global subscribers (all sessions, for index page)
@@ -86,7 +97,7 @@ class Store:
                         break
         return node
 
-    # ---- per-node action store (long-poll friendly) ----
+    # ---- per-node action buffer (idle-debounce flush) ----
     def get_event(self, node_id: str) -> asyncio.Event:
         ev = self._events.get(node_id)
         if ev is None:
@@ -94,55 +105,134 @@ class Store:
             self._events[node_id] = ev
         return ev
 
-    def get_action(self, node_id: str) -> Optional[AskBranchesResult]:
+    def get_actions(self, node_id: str) -> Optional[list[AskBranchesResult]]:
+        """Return committed batch, or None if not yet flushed."""
         return self._actions.get(node_id)
 
-    def set_action(self, node_id: str, result: AskBranchesResult) -> bool:
-        """Idempotent commit. First write wins; returns True if newly committed."""
-        if node_id in self._actions:
+    def is_flushed(self, node_id: str) -> bool:
+        return node_id in self._flushed
+
+    def enqueue_action(
+        self, session_id: str, node_id: str, record: AskBranchesResult
+    ) -> bool:
+        """Append record to pending buffer + reset 750ms idle timer.
+        Returns False if node already locked (caller should reject)."""
+        if node_id in self._flushed:
             return False
-        self._actions[node_id] = result
-        self.get_event(node_id).set()
+        self._pending.setdefault(node_id, []).append(record)
+        existing = self._timers.pop(node_id, None)
+        if existing is not None:
+            existing.cancel()
+        loop = asyncio.get_event_loop()
+        self._timers[node_id] = loop.call_later(
+            DEBOUNCE_SECONDS, self._flush, session_id, node_id
+        )
         return True
+
+    def flush_now(self, session_id: str, node_id: str) -> None:
+        """Bypass idle timer — used by terminal-class clicks (next/other/stop/chat)."""
+        existing = self._timers.pop(node_id, None)
+        if existing is not None:
+            existing.cancel()
+        self._flush(session_id, node_id)
+
+    def _flush(self, session_id: str, node_id: str) -> None:
+        """Move pending → committed, lock node, wake waiters, broadcast event."""
+        if node_id in self._flushed:
+            return
+        self._timers.pop(node_id, None)
+        pending = self._pending.pop(node_id, [])
+        if not pending:
+            return
+        self._actions[node_id] = pending
+        self._flushed.add(node_id)
+        self.get_event(node_id).set()
+        # broadcast committed event (timer callback is sync — schedule task)
+        try:
+            asyncio.get_event_loop().create_task(
+                self.broadcast(
+                    session_id,
+                    {
+                        "type": "node_committed",
+                        "session_id": session_id,
+                        "payload": {
+                            "node_id": node_id,
+                            "actions": [a.model_dump() for a in pending],
+                        },
+                    },
+                )
+            )
+        except RuntimeError:
+            # no running loop (test teardown) — skip broadcast
+            pass
 
     def clear_node_state(self, node_id: str) -> None:
         """End-of-session cleanup."""
+        timer = self._timers.pop(node_id, None)
+        if timer is not None:
+            timer.cancel()
         self._actions.pop(node_id, None)
+        self._pending.pop(node_id, None)
         self._events.pop(node_id, None)
+        self._flushed.discard(node_id)
+
+    def get_status_event(self, sid: str) -> asyncio.Event:
+        ev = self._status_events.get(sid)
+        if ev is None:
+            ev = asyncio.Event()
+            self._status_events[sid] = ev
+        return ev
+
+    def _bump_status_event(self, sid: str) -> None:
+        """Wake current waiters and rotate to a fresh event for future waits.
+        Avoids the set()+clear() race where a freshly-cleared event makes
+        Event.wait() return False before the resumer can re-check state."""
+        old = self._status_events.pop(sid, None)
+        if old is not None:
+            old.set()
+        # next get_status_event call lazily creates a fresh, unset event
 
     def pause_session(
         self, sid: str, node_id: str, branch_id: Optional[str] = None
-    ) -> Optional[Session]:
-        """Mark session paused (chat handoff to CC). Returns session or None."""
+    ) -> tuple[Optional[Session], bool]:
+        """Mark session paused (chat handoff to CC). Returns (session, changed)
+        where changed=False if session was already paused on this exact
+        (node_id, branch_id) pair — caller can skip re-broadcasting."""
         s = self.sessions.get(sid)
         if not s:
-            return None
+            return None, False
+        already = (
+            s.status == "paused"
+            and s.paused_node_id == node_id
+            and s.paused_branch_id == branch_id
+        )
         s.status = "paused"
         s.paused_node_id = node_id
         s.paused_branch_id = branch_id
-        return s
+        if not already:
+            self._bump_status_event(sid)
+        return s, not already
 
     def resume_session(self, sid: str) -> Optional[Session]:
-        """Flip paused → active. Called when present_branches pushes after pause."""
+        """Flip paused → active. Called explicitly via resume_session MCP tool
+        when user types 'resume' in CC, or implicitly when present_branches
+        pushes a new node."""
         s = self.sessions.get(sid)
         if not s or s.status != "paused":
             return None
         s.status = "active"
         s.paused_node_id = None
         s.paused_branch_id = None
+        self._bump_status_event(sid)
         return s
 
     # ---- branch state mutation from GUI ----
     def apply_action(self, action: GuiAction) -> Optional[AskBranchesResult]:
-        """Validate + (when committing) mutate.
+        """Mutate node state immediately + return action record for the buffer.
 
-        Returns None for tagging-only actions or invalid input. Returns an
-        AskBranchesResult for actions that should wake `wait_for_action`.
-
-        Mutations on the node (branch state, user_note) only apply when this
-        is also a fresh first-write commit — caller must call `set_action`
-        and, only if it returns True, then call `apply_committed` to persist
-        node mutations before broadcasting `node_updated`.
+        Returns None on invalid input (no session, no node, missing required
+        fields, locked node). Mutations apply right away regardless of when
+        the buffer flushes, so the GUI feels responsive.
         """
         s = self.sessions.get(action.session_id)
         if not s:
@@ -150,30 +240,40 @@ class Store:
         node = s.nodes.get(action.node_id)
         if not node:
             return None
+        if action.node_id in self._flushed:
+            return None  # locked
 
         if action.action == "stop":
             return AskBranchesResult(node_id=action.node_id, action="stop")
 
-        # tagging-only actions (no commit, no wait_for_action wakeup)
         if action.action in ("mark_rejected", "unmark") and action.branch_id:
-            for b in node.branches:
-                if b.id == action.branch_id:
-                    if action.action == "mark_rejected":
-                        b.state = "rejected"
-                    else:  # unmark
-                        b.state = "considered"
-                    break
-            return None
-
-        if action.action == "next":
-            if not action.branch_id:
-                return None
-            # validate branch exists; do NOT mutate yet (caller commits first)
             chosen = next(
                 (b for b in node.branches if b.id == action.branch_id), None
             )
             if chosen is None:
                 return None
+            chosen.state = (
+                "rejected" if action.action == "mark_rejected" else "considered"
+            )
+            return AskBranchesResult(
+                node_id=action.node_id,
+                chosen_branch_id=chosen.id,
+                chosen_branch_label=chosen.label,
+                action=action.action,
+            )
+
+        if action.action == "next":
+            if not action.branch_id:
+                return None
+            chosen = next(
+                (b for b in node.branches if b.id == action.branch_id), None
+            )
+            if chosen is None:
+                return None
+            for other in node.branches:
+                if other.state == "chosen" and other.id != chosen.id:
+                    other.state = "considered"
+            chosen.state = "chosen"
             return AskBranchesResult(
                 node_id=action.node_id,
                 chosen_branch_id=chosen.id,
@@ -185,6 +285,7 @@ class Store:
         if action.action == "other":
             if not action.note:
                 return None
+            node.user_note = action.note
             return AskBranchesResult(
                 node_id=action.node_id,
                 note=action.note,
@@ -192,9 +293,6 @@ class Store:
             )
 
         if action.action == "chat":
-            # bare click. branch_id optional: when set, chat is scoped to a
-            # specific branch and surfaces in chosen_branch_id (+ label) so
-            # the skill knows the scope without ID-to-label mapping.
             chosen = None
             if action.branch_id:
                 chosen = next(
@@ -209,30 +307,6 @@ class Store:
                 action="chat",
             )
         return None
-
-    def apply_committed(self, action: GuiAction) -> None:
-        """Apply node mutations that should only happen on a *fresh* commit.
-
-        Caller invokes this AFTER `set_action` has returned True so that a
-        late/duplicate click does not corrupt visible node state.
-        """
-        s = self.sessions.get(action.session_id)
-        if not s:
-            return
-        node = s.nodes.get(action.node_id)
-        if not node:
-            return
-        if action.action == "next" and action.branch_id:
-            for b in node.branches:
-                if b.id == action.branch_id:
-                    for other in node.branches:
-                        if other.state == "chosen" and other.id != b.id:
-                            other.state = "considered"
-                    b.state = "chosen"
-                    break
-        elif action.action == "other" and action.note:
-            node.user_note = action.note
-        # chat: bare click, no seed → no node mutation
 
     # ---- hook traces ----
     def attach_hook(self, ev: HookEvent) -> None:

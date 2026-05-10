@@ -45,13 +45,15 @@ export function DecisionNode({ data }: NodeProps) {
     setOtherOpen(false);
   };
 
+  const committed = !!node.committed;
   return (
-    <div className={`gc-node ${node.implicit ? "implicit" : ""} ${isPending ? "pending" : ""}`}>
+    <div className={`gc-node ${node.implicit ? "implicit" : ""} ${isPending ? "pending" : ""} ${committed ? "committed" : ""}`}>
       <Handle type="target" position={Position.Top} />
       <div className="gc-node-head">
         <span className="gc-node-depth">d{node.depth}</span>
         {node.implicit && <span className="gc-node-tag">implicit</span>}
-        {isPending && <span className="gc-node-tag pulse">awaiting</span>}
+        {isPending && !committed && <span className="gc-node-tag pulse">awaiting</span>}
+        {committed && <span className="gc-node-tag">settled</span>}
       </div>
       <div className="gc-node-q">{node.question}</div>
       {node.reasoning && (
@@ -64,9 +66,9 @@ export function DecisionNode({ data }: NodeProps) {
       )}
       <div className="gc-branches">
         {node.branches.map((b) => (
-          <BranchRow key={b.id} branch={b} onPick={send} pending={isPending} />
+          <BranchRow key={b.id} branch={b} onPick={send} pending={isPending && !committed} committed={committed} />
         ))}
-        {isPending && (
+        {isPending && !committed && (
           <div className="gc-branch other">
             {!otherOpen ? (
               <div className="gc-branch-row">
@@ -103,7 +105,7 @@ export function DecisionNode({ data }: NodeProps) {
             )}
           </div>
         )}
-        {isPending && (
+        {isPending && !committed && (
           <div className="gc-branch chat">
             <div className="gc-branch-row">
               <span className="gc-branch-glyph">⎘</span>
@@ -149,10 +151,12 @@ function BranchRow({
   branch,
   onPick,
   pending,
+  committed,
 }: {
   branch: Branch;
   onPick: (a: "next" | "other" | "mark_rejected" | "unmark" | "chat", bid?: string, note?: string) => void;
   pending: boolean;
+  committed: boolean;
 }) {
   const [showRationale, setShowRationale] = useState(false);
   return (
@@ -181,39 +185,41 @@ function BranchRow({
         </button>
       )}
       {showRationale && <div className="gc-branch-rationale">{branch.rationale}</div>}
-      <div className="gc-branch-actions">
-        {branch.state === "chosen" ? (
-          <button className="gc-btn ghost" onClick={() => onPick("unmark", branch.id)}>
-            unmark
-          </button>
-        ) : pending ? (
-          <>
-            <button className="gc-btn primary" onClick={() => onPick("next", branch.id)}>
-              pick →
+      {!committed && (
+        <div className="gc-branch-actions">
+          {branch.state === "chosen" ? (
+            <button className="gc-btn ghost" onClick={() => onPick("unmark", branch.id)}>
+              unmark
             </button>
+          ) : pending ? (
+            <>
+              <button className="gc-btn primary" onClick={() => onPick("next", branch.id)}>
+                pick →
+              </button>
+              <button
+                className="gc-btn ghost"
+                onClick={() => onPick("mark_rejected", branch.id)}
+              >
+                reject
+              </button>
+              <button
+                className="gc-btn ghost"
+                onClick={() => onPick("chat", branch.id)}
+                title="Pause grill, chat about THIS option in CC"
+              >
+                chat
+              </button>
+            </>
+          ) : (
             <button
               className="gc-btn ghost"
               onClick={() => onPick("mark_rejected", branch.id)}
             >
               reject
             </button>
-            <button
-              className="gc-btn ghost"
-              onClick={() => onPick("chat", branch.id)}
-              title="Pause grill, chat about THIS option in CC"
-            >
-              chat
-            </button>
-          </>
-        ) : (
-          <button
-            className="gc-btn ghost"
-            onClick={() => onPick("mark_rejected", branch.id)}
-          >
-            reject
-          </button>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

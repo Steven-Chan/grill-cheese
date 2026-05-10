@@ -109,7 +109,19 @@ class AskBranchesResult(BaseModel):
     # whenever chosen_branch_id is set.
     chosen_branch_label: Optional[str] = None
     note: Optional[str] = None
-    action: Literal["next", "other", "stop", "skip", "chat"] = "skip"
+    action: Literal[
+        "next", "other", "stop", "chat", "mark_rejected", "unmark"
+    ] = "next"
+
+
+class WaitForActionResult(BaseModel):
+    """Batched return for wait_for_action.
+
+    Empty `actions` = skip (transport timeout, no flush yet — re-poll).
+    Non-empty = flushed batch; idempotent on subsequent polls.
+    """
+    node_id: str
+    actions: list[AskBranchesResult] = Field(default_factory=list)
 
 
 # ---- claude code hook payload (subset we care about) ----

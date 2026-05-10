@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .schemas import (
     AskBranchesResult,
     Branch,
+    WaitForActionResult,
 )
 from .state import store
 
@@ -100,50 +101,50 @@ async def wait_for_action(
     node_id: str,
     timeout_seconds: float = 50.0,
 ) -> dict:
-    """Long-poll for the user's action on a node previously pushed via present_branches.
+    """Long-poll for the user's batched actions on a node.
 
     Blocks up to timeout_seconds (kept under CC's MCP HTTP timeout ~60s).
-    Returns {node_id, chosen_branch_id?, chosen_branch_label?, note?, action}
-    where chosen_branch_label echoes the label of the chosen branch (so the
-    skill never has to map the opaque chosen_branch_id back to an option),
-    and action is one of:
-      - "next"  -> user clicked a branch. `chosen_branch_id` is set; `note`
-                   may carry an optional comment.
-      - "other" -> user typed free text instead of picking a branch.
-                   `note` carries the text; `chosen_branch_id` is None. Read
-                   the note like a /grill-me text answer and let it drive the
-                   next question (drill or move sideways — your call).
-      - "stop"  -> user is done. End the session.
-      - "chat"  -> user wants to PAUSE the grill loop and continue chatting in
-                   Claude Code about this node. `chosen_branch_id` is set when
-                   the chat is scoped to a specific branch (per-branch button);
-                   None when scoped to the node itself. The server has marked
-                   the session paused. Do NOT call `end_session` — the session
-                   is still alive. Stop pushing nodes; continue the conversation
-                   in plain chat about the node (and the pinned branch, if any).
-                   When the user signals "back to grilling", call
-                   `present_branches` again on the same `session_id` — the
-                   server auto-resumes status to active.
-      - "skip"  -> TIMEOUT, no user action yet. CALL THIS TOOL AGAIN with the
-                   same node_id to keep waiting. Do NOT generate a new question.
+    Returns `{node_id, actions: [...]}` where each action item carries
+    `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action}`.
 
-    Once a user action arrives, this function is idempotent on subsequent calls.
+    Server buffers GUI clicks and flushes after a 750ms idle window OR
+    immediately when a terminal-class click (next/other/stop/chat) lands.
+
+    - `actions == []`  -> TIMEOUT / no flush yet. RE-POLL with the same
+                          node_id. Do NOT call present_branches again.
+    - `actions == [...]`-> flushed batch. Process the list as a narrative:
+                           tagging clicks (mark_rejected, unmark) interleaved
+                           with one (or more) terminal clicks at end. The
+                           last terminal-class action is the user's final word;
+                           earlier entries are 'changed mind' signals.
+                           Idempotent — subsequent polls return the same list.
+                           Node is now LOCKED — further user clicks rejected.
+
+    Per-item action values: "next" | "other" | "stop" | "chat" |
+    "mark_rejected" | "unmark".
+
+    For chat: server has marked session paused. Original node is locked, so
+    push a NEW node (or call `end_session`) when ready to continue. Use
+    `resume_session_tool` to flip status back to active before pushing.
     """
-    # If already committed, return immediately (handles retry / re-poll cleanly).
-    existing = store.get_action(node_id)
-    if existing is not None:
-        return existing.model_dump()
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
+    while True:
+        existing = store.get_actions(node_id)
+        if existing is not None:
+            return WaitForActionResult(
+                node_id=node_id, actions=existing
+            ).model_dump()
 
-    event = store.get_event(node_id)
-    try:
-        await asyncio.wait_for(event.wait(), timeout=timeout_seconds)
-    except asyncio.TimeoutError:
-        return AskBranchesResult(node_id=node_id, action="skip").model_dump()
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            return WaitForActionResult(node_id=node_id, actions=[]).model_dump()
 
-    result = store.get_action(node_id) or AskBranchesResult(
-        node_id=node_id, action="skip"
-    )
-    return result.model_dump()
+        node_event = store.get_event(node_id)
+        try:
+            await asyncio.wait_for(node_event.wait(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return WaitForActionResult(node_id=node_id, actions=[]).model_dump()
+        # loop: re-check committed batch
 
 
 # NOTE: ask_branches was removed. It was a single-call wrapper around
@@ -185,6 +186,33 @@ async def record_implicit_decision(
         },
     )
     return {"node_id": node.id}
+
+
+@mcp.tool()
+async def resume_session_tool(session_id: str) -> dict:
+    """Flip a paused session back to active.
+
+    Call this when the user signals "resume" / "back to grilling" / similar
+    in CC chat after an earlier `chat` action paused the session.
+
+    The chatted node is LOCKED (chat triggered an immediate buffer flush).
+    Do NOT re-poll `wait_for_action` on it — that returns the already
+    committed batch instantly. After resume, push a NEW `present_branches`
+    to keep grilling, or call `end_session` if the user is done.
+
+    No-op if session is not paused.
+    """
+    if store.resume_session(session_id) is None:
+        return {"ok": False, "err": "session not paused"}
+    await store.broadcast(
+        session_id,
+        {
+            "type": "session_resumed",
+            "session_id": session_id,
+            "payload": {},
+        },
+    )
+    return {"ok": True}
 
 
 @mcp.tool()
