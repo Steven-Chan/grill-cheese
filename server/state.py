@@ -18,7 +18,12 @@ from .schemas import (
 
 MAX_RING = 5000  # per-session SSE replay buffer
 DEBOUNCE_SECONDS = 0.75  # idle window before flushing buffered clicks
-TERMINAL_ACTIONS = {"next", "other", "stop", "chat"}
+TERMINAL_ACTIONS = {
+    "next", "other", "stop", "chat",
+    "stop_here", "create_plan", "implement_now", "continue_grill",
+}
+# subset that auto-end the session server-side after flush
+SUMMARY_END_ACTIONS = {"stop_here", "create_plan", "implement_now"}
 
 
 class Store:
@@ -67,6 +72,8 @@ class Store:
         parent_branch_id: Optional[str],
         depth: int,
         implicit: bool = False,
+        kind: Optional[str] = None,
+        summary_body: Optional[str] = None,
     ) -> Node:
         s = self.sessions[sid]
         node_id = uuid.uuid4().hex[:10]
@@ -83,6 +90,8 @@ class Store:
             depth=depth,
             implicit=implicit,
             created_at=time.time(),
+            kind=kind,
+            summary_body=summary_body,
         )
         s.nodes[node_id] = node
         if s.root_node_id is None:
@@ -247,7 +256,46 @@ class Store:
             return None  # locked
 
         if action.action == "stop":
+            # stop on a summary node = treat as stop_here (defensive: GUI
+            # should not surface a "wrap up" button when summary is pending,
+            # but if it slips through, we map it cleanly)
+            if node.kind == "summary":
+                return AskBranchesResult(
+                    node_id=action.node_id, action="stop_here"
+                )
             return AskBranchesResult(node_id=action.node_id, action="stop")
+
+        if action.action == "stop_here":
+            return AskBranchesResult(
+                node_id=action.node_id, action="stop_here"
+            )
+
+        if action.action in ("create_plan", "implement_now"):
+            return AskBranchesResult(
+                node_id=action.node_id,
+                action=action.action,
+                chain_markdown=self._build_chain_md(s),
+            )
+
+        if action.action == "continue_grill":
+            # synthesize a "continue" branch on the summary node so the next
+            # present_branches can wire its parent_branch_id to it and dagre
+            # renders the edge.
+            cont = Branch(
+                id=uuid.uuid4().hex[:8],
+                label="continue",
+                rationale="",
+                is_recommended=False,
+                state="chosen",
+            )
+            node.branches.append(cont)
+            return AskBranchesResult(
+                node_id=action.node_id,
+                chosen_branch_id=cont.id,
+                chosen_branch_label=cont.label,
+                note=action.note,
+                action="continue_grill",
+            )
 
         if action.action in ("mark_rejected", "unmark") and action.branch_id:
             chosen = next(
@@ -310,6 +358,59 @@ class Store:
                 action="chat",
             )
         return None
+
+    # ---- chain markdown (chosen-path only) ----
+    def _build_chain_md(self, session: Session) -> str:
+        """Render the chosen-path chain as markdown for create_plan / implement_now.
+
+        Walks from root following only `chosen` branches. Includes brief at top.
+        Empty branches/notes still emit something useful.
+        """
+        lines = [f"# Grill Session — {session.id}", "", f"**Brief:** {session.brief}", ""]
+        if not session.root_node_id:
+            return "\n".join(lines)
+        visited: set[str] = set()
+        node_id: Optional[str] = session.root_node_id
+        depth = 0
+        while node_id and node_id not in visited:
+            visited.add(node_id)
+            n = session.nodes.get(node_id)
+            if not n:
+                break
+            if n.kind == "summary":
+                h = "#" * (depth + 2)
+                lines.append(f"{h} Summary")
+                if n.summary_body:
+                    lines.append("")
+                    lines.append(n.summary_body)
+                lines.append("")
+                # don't break — follow continuation branch (continue_grill
+                # makes summary non-terminal). Walks until truly terminal.
+                chosen = next(
+                    (b for b in n.branches if b.state == "chosen"), None
+                )
+                node_id = chosen.child_node_id if chosen else None
+                depth += 1
+                continue
+            h = "#" * (depth + 2)
+            lines.append(f"{h} {n.question}")
+            if n.reasoning:
+                lines.append(f"> {n.reasoning}")
+            chosen = next(
+                (b for b in n.branches if b.state == "chosen"), None
+            )
+            if chosen:
+                lines.append("")
+                lines.append(f"**Chose:** {chosen.label}")
+                if chosen.rationale:
+                    lines.append(f"_{chosen.rationale}_")
+            if n.user_note:
+                lines.append("")
+                lines.append(f"**Note:** {n.user_note}")
+            lines.append("")
+            node_id = chosen.child_node_id if chosen else None
+            depth += 1
+        return "\n".join(lines)
 
     # ---- hook traces ----
     def attach_hook(self, ev: HookEvent) -> None:

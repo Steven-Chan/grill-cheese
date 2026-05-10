@@ -94,7 +94,92 @@ async def present_branches(
             "payload": node.model_dump(),
         },
     )
+    # add_node mutated parent.branches[parent_branch_id].child_node_id —
+    # broadcast the parent so the frontend can draw the edge.
+    await _broadcast_parent_update(session_id, parent_node_id)
     # node_added flips has_pending=true for this session
+    await store.broadcast_session_list()
+    return {"node_id": node.id}
+
+
+async def _broadcast_parent_update(session_id: str, parent_node_id: Optional[str]) -> None:
+    if not parent_node_id:
+        return
+    s = store.get(session_id)
+    if not s:
+        return
+    parent = s.nodes.get(parent_node_id)
+    if not parent:
+        return
+    await store.broadcast(
+        session_id,
+        {
+            "type": "node_updated",
+            "session_id": session_id,
+            "payload": parent.model_dump(),
+        },
+    )
+
+
+@mcp.tool()
+async def present_summary(
+    session_id: str,
+    summary: str,
+    parent_node_id: Optional[str] = None,
+    parent_branch_id: Optional[str] = None,
+) -> dict:
+    """Push a SUMMARY node (verdict card) to the GUI. Returns {node_id}.
+
+    Symmetric to present_branches: returns instantly; pair with wait_for_action
+    long-poll. The user picks one of four verdict actions:
+
+      - stop_here      -> approve, no follow-up signal. Server auto-ends.
+      - create_plan    -> approve, write detailed implementation plan first.
+                          Server auto-ends. Result carries chain_markdown.
+      - implement_now  -> approve, start coding immediately.
+                          Server auto-ends. Result carries chain_markdown.
+      - continue_grill -> keep grilling. Optional note carries user's
+                          redirect. Result has chosen_branch_id pointing to
+                          a synthetic continuation branch — pass it as
+                          parent_branch_id on your next present_branches.
+
+    `summary` is markdown. Render breathing room — multi-paragraph, bullets,
+    headings welcome.
+
+    For stop_here / create_plan / implement_now: do NOT call end_session.
+    Server has already ended the session.
+    """
+    # Pushing a summary implicitly resumes a paused session.
+    if store.resume_session(session_id) is not None:
+        await store.broadcast(
+            session_id,
+            {
+                "type": "session_resumed",
+                "session_id": session_id,
+                "payload": {},
+            },
+        )
+        await store.broadcast_session_list()
+    node = store.add_node(
+        sid=session_id,
+        question="",
+        reasoning="",
+        branches=[],
+        parent_node_id=parent_node_id,
+        parent_branch_id=parent_branch_id,
+        depth=0,
+        kind="summary",
+        summary_body=summary,
+    )
+    await store.broadcast(
+        session_id,
+        {
+            "type": "node_added",
+            "session_id": session_id,
+            "payload": node.model_dump(),
+        },
+    )
+    await _broadcast_parent_update(session_id, parent_node_id)
     await store.broadcast_session_list()
     return {"node_id": node.id}
 
@@ -109,10 +194,11 @@ async def wait_for_action(
 
     Blocks up to timeout_seconds (kept under CC's MCP HTTP timeout ~60s).
     Returns `{node_id, actions: [...]}` where each action item carries
-    `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action}`.
+    `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action,
+    chain_markdown?}`.
 
     Server buffers GUI clicks and flushes after a 750ms idle window OR
-    immediately when a terminal-class click (next/other/stop/chat) lands.
+    immediately when a terminal-class click lands.
 
     - `actions == []`  -> TIMEOUT / no flush yet. RE-POLL with the same
                           node_id. Do NOT call present_branches again.
@@ -125,11 +211,17 @@ async def wait_for_action(
                            Node is now LOCKED — further user clicks rejected.
 
     Per-item action values: "next" | "other" | "stop" | "chat" |
-    "mark_rejected" | "unmark".
+    "mark_rejected" | "unmark" | "stop_here" | "create_plan" |
+    "implement_now" | "continue_grill".
 
     For chat: server has marked session paused. Original node is locked, so
     push a NEW node (or call `end_session`) when ready to continue. Use
     `resume_session_tool` to flip status back to active before pushing.
+
+    Summary-node verdicts (stop_here / create_plan / implement_now) AUTO-END
+    the session server-side. Do NOT call end_session for those. The
+    create_plan and implement_now actions also carry `chain_markdown` — the
+    full chosen-path recap as markdown — for downstream plan-write or coding.
     """
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     while True:

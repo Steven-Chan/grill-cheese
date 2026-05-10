@@ -4,7 +4,11 @@ export type ActionKind =
   | "mark_rejected"
   | "unmark"
   | "stop"
-  | "chat";
+  | "chat"
+  | "stop_here"
+  | "create_plan"
+  | "implement_now"
+  | "continue_grill";
 
 export async function postAction(
   session_id: string,

@@ -71,9 +71,11 @@ function handle(raw: string) {
     case "node_resolved":
       s.setNodeResolved(ev.payload.node_id);
       break;
-    case "node_committed":
-      s.setNodeCommitted(ev.payload.node_id);
+    case "node_committed": {
+      const last = ev.payload.actions?.[ev.payload.actions.length - 1];
+      s.setNodeCommitted(ev.payload.node_id, last?.action ?? null);
       break;
+    }
     case "hook_event":
       s.appendHook(ev.payload as HookTrace);
       break;

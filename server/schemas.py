@@ -24,6 +24,9 @@ class Branch(BaseModel):
     child_node_id: Optional[str] = None
 
 
+NodeKind = Literal["decision", "summary"]
+
+
 class Node(BaseModel):
     id: str
     parent_node_id: Optional[str] = None
@@ -36,6 +39,10 @@ class Node(BaseModel):
     created_at: float = 0.0
     # free-text answer when user picks "Other" instead of a branch
     user_note: Optional[str] = None
+    # node kind: "decision" (default) or "summary" (terminal verdict card)
+    kind: Optional[NodeKind] = None
+    # markdown body, populated only when kind == "summary"
+    summary_body: Optional[str] = None
 
 
 # ---- session ----
@@ -85,7 +92,10 @@ class GuiAction(BaseModel):
     node_id: str
     branch_id: Optional[str] = None
     note: Optional[str] = None
-    action: Literal["next", "other", "mark_rejected", "stop", "unmark", "chat"]
+    action: Literal[
+        "next", "other", "mark_rejected", "stop", "unmark", "chat",
+        "stop_here", "create_plan", "implement_now", "continue_grill",
+    ]
 
 
 # ---- present_branches / wait_for_action MCP tool input/output ----
@@ -110,8 +120,12 @@ class AskBranchesResult(BaseModel):
     chosen_branch_label: Optional[str] = None
     note: Optional[str] = None
     action: Literal[
-        "next", "other", "stop", "chat", "mark_rejected", "unmark"
+        "next", "other", "stop", "chat", "mark_rejected", "unmark",
+        "stop_here", "create_plan", "implement_now", "continue_grill",
     ] = "next"
+    # full chosen-path markdown — set only on create_plan / implement_now
+    # so model can drive plan-write or coding directly off this string
+    chain_markdown: Optional[str] = None
 
 
 class WaitForActionResult(BaseModel):

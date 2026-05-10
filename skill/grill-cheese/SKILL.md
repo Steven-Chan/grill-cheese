@@ -30,11 +30,13 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
            continue                                    # timeout, NOT user inactivity
        break
    ```
-   Server **buffers** every click on the node and **flushes** after a 750ms idle window OR immediately when a terminal-class click lands (`next` / `other` / `stop` / `chat`). The flushed batch is returned as `result.actions` — an ordered list of action records. Each item has the same shape as the old single-action result: `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action}`. Per-item action values: `next` | `other` | `stop` | `chat` | `mark_rejected` | `unmark`.
+   Server **buffers** every click on the node and **flushes** after a 750ms idle window OR immediately when a terminal-class click lands. The flushed batch is returned as `result.actions` — an ordered list of action records. Each item: `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action, chain_markdown?}`. Per-item action values: `next` | `other` | `stop` | `chat` | `mark_rejected` | `unmark` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`. The last four come from a SummaryNode (see "Ending"); only `create_plan` and `implement_now` populate `chain_markdown`.
 
    `wait_for_action` is idempotent: once flushed, every subsequent call returns the same list. Empty list = no flush yet — re-poll with the same `node_id`.
 
    **CRITICAL: do NOT call `present_branches` again on an empty `actions` result.** That duplicates the node on the canvas. Only re-poll `wait_for_action` with the same `node_id`.
+
+   Each action item shape: `{node_id, chosen_branch_id?, chosen_branch_label?, note?, action, chain_markdown?}`. The `chain_markdown` field is set only on `create_plan` / `implement_now` (summary-node verdicts).
 
 5. **Read the batch as a narrative and decide what to ask next.**
 
@@ -42,9 +44,13 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 
    - **Item with `action == "next"`** → user picked one of your branches at that point. Read `chosen_branch_label` (not the id). Earlier `mark_rejected` entries on other branches are useful signals: the user weighed and dropped them.
    - **Item with `action == "other"`** → user typed free text. `note` carries the text. Read it like a /grill-me chat reply — it may override branches or redirect the question.
-   - **Item with `action == "stop"`** → user is done. Call `end_session(session_id, summary=<recap of the chain>)` and stop.
+   - **Item with `action == "stop"`** → user clicked **wrap up** in the toolbar — they want a verdict card next, NOT a hard stop. Call `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<this node's id>, parent_branch_id=<chosen branch id from this node, if any>)`. Then `wait_for_action` on the returned summary node id. See "Ending" below for the verdict-action handlers. Do NOT call `end_session`.
    - **Item with `action == "chat"`** → user is pausing the grill to chat about this node in Claude Code. Server has marked the session paused AND locked this node (no more clicks). `chosen_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`** — the session is alive, paused. Continue the conversation in plain chat. When the user signals "back to grilling", call `resume_session_tool(session_id)` and push a NEW `present_branches` (the original node is locked — you cannot keep grilling on it).
    - **Item with `action == "mark_rejected"` / `"unmark"`** → tagging signal only. The branch label tells you which option the user weighed. Useful context, not an answer.
+   - **Item with `action == "stop_here"`** → summary verdict: user approved, no further action. Server has already ended the session. Point user at the export. Do NOT call `end_session`.
+   - **Item with `action == "create_plan"`** → summary verdict: user approved, wants a detailed implementation plan first (not code). `chain_markdown` carries the full chosen-path recap. Use it to draft a plan (markdown doc, ordered task list, file-level breakdown). Server has already ended the session. Do NOT call `end_session`.
+   - **Item with `action == "implement_now"`** → summary verdict: user approved, wants code now. `chain_markdown` carries the full chosen-path recap. Start coding immediately based on the decisions. Server has already ended the session. Do NOT call `end_session`.
+   - **Item with `action == "continue_grill"`** → user wants more grilling. `chosen_branch_id` is the synthetic continuation branch id; `note` (if set) is the user's redirect for what to drill into next. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_id>, ...)` to resume. Session NOT ended.
 
    Then *you decide* what the next question is — exactly like /grill-me. Two natural moves:
    - **Drill down**: ask the follow-up that *only exists because of the chosen answer*. Pass `parent_node_id=node_id`, `parent_branch_id=<chosen_branch_id from the final next item>`, `depth+=1`.
@@ -65,6 +71,8 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 - **Take "other" answers literally.** If the user types "actually let's stop and look at X instead", do that. Don't paraphrase or pick the closest branch. The whole point of the text input is to let the user override your option set.
 - **Respect rejection.** If the user marks a branch `rejected` (a tagging-only action) and answers a different way, do not re-surface the rejected branch as a child later.
 - **On `chat`: NEVER call `end_session`.** Chat pauses the session, it does not end it. The chatted node is locked (cannot be answered further). Continue in plain chat; when ready to keep grilling, call `resume_session_tool(session_id)` then push a NEW `present_branches` — do not try to re-poll the locked node.
+- **On `stop` (toolbar wrap-up): NEVER call `end_session` directly.** Always call `present_summary` first — the user gets a verdict card with four options (`stop_here` / `create_plan` / `implement_now` / `continue_grill`) and the session ends only after they pick a terminal verdict (server-side, automatically).
+- **For summary verdicts (`stop_here` / `create_plan` / `implement_now`): NEVER call `end_session`.** The server has already ended the session. Calling it again is harmless but pointless. `end_session` remains only as an escape hatch for crashes / explicit bailout.
 
 ## Depth + breadth budget
 
@@ -77,8 +85,20 @@ When calling `present_branches` for a child, pass `parent_node_id` and `parent_b
 
 ## Ending
 
-- User chooses `stop` → call `end_session(session_id, summary=...)`. Recap the **chain of answers** (chosen branches + any "other" notes) end-to-end.
-- After `end_session`, point the user at the markdown export: `http://127.0.0.1:7878/export/<session_id>.md`.
+End-of-session always goes through a **summary verdict card**. Never call `end_session` directly when the user signals they're done — push `present_summary` instead and let the user pick how to land.
+
+Flow:
+
+1. User clicks **wrap up** (toolbar) → you receive `action == "stop"` on the current pending DecisionNode.
+2. Call `present_summary(session_id, summary=<markdown recap of the chain so far>, parent_node_id=<id of the node that just got the stop>, parent_branch_id=<chosen branch id on that node, if any>)`. Returns `{node_id}` for the new summary card. The server attaches it as a child of the parent so dagre renders it cleanly below the chain.
+3. Long-poll `wait_for_action(session_id, summary_node_id)` as usual. The result's `actions[]` will contain ONE of:
+   - `stop_here` — user approves, no follow-up. Server has ended the session. Point user at the export.
+   - `create_plan` — user approves, wants a plan first. `chain_markdown` is the full chosen-path recap. Use it to write a detailed implementation plan (markdown doc, ordered tasks, file-level breakdown). Server has ended the session.
+   - `implement_now` — user approves, wants code now. `chain_markdown` is the full recap. Start coding immediately. Server has ended the session.
+   - `continue_grill` — user wants more grilling. `chosen_branch_id` is the synthetic continuation branch on the summary node; `note` (if set) is their direction. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_id>, depth=...)` to resume.
+4. Always point the user at the markdown export when the session ends: `http://127.0.0.1:7878/export/<session_id>.md`.
+
+The `summary` arg to `present_summary` should be a substantive markdown recap — headings, bullets, the actual chain of decisions. The card has breathing room (480px wide, scrollable body); use it. The summary is what the user reads to decide between the four verdicts, so make it actually useful.
 
 ## Example tool calls
 
@@ -128,6 +148,26 @@ present_branches(
   question="Stripe, Paddle, or roll your own?",
   ...
 )
+
+# ... many turns later, user clicks "wrap up" in toolbar ...
+wait_for_action(session_id="ab12cd34", node_id="n7")
+→ {node_id: "n7", actions: [{node_id: "n7", action: "stop"}]}
+
+# push the verdict card
+present_summary(
+  session_id="ab12cd34",
+  summary="## Decisions\n\n- Pricing: usage-based\n- Processor: Stripe\n- Metering: Stripe Meters API\n\n## Open\n- Free-tier threshold still TBD",
+  parent_node_id="n7",
+  parent_branch_id="b14",
+)
+→ {node_id: "ns1"}
+
+wait_for_action(session_id="ab12cd34", node_id="ns1")
+→ {node_id: "ns1", actions: [
+    {node_id: "ns1", action: "create_plan", chain_markdown: "# Grill Session ...\n\n## ...\n**Chose:** Usage-based\n..."}
+  ]}
+# server has auto-ended the session. write a plan from chain_markdown.
+# do NOT call end_session.
 ```
 
 ## Reminder on style

@@ -9,6 +9,8 @@ export interface Branch {
   child_node_id: string | null;
 }
 
+export type NodeKind = "decision" | "summary";
+
 export interface DecisionNode {
   id: string;
   parent_node_id: string | null;
@@ -22,6 +24,14 @@ export interface DecisionNode {
   user_note: string | null;
   // set true after server flushes the click buffer — node locked, no more input
   committed?: boolean;
+  // last terminal action committed (e.g. "stop_here", "create_plan"). Set
+  // alongside committed=true. Used by SummaryNode to highlight which verdict
+  // the user picked.
+  committed_action?: string | null;
+  // null/undefined = "decision"; "summary" = verdict card
+  kind?: NodeKind | null;
+  // markdown body, populated only when kind === "summary"
+  summary_body?: string | null;
 }
 
 export interface HookTrace {

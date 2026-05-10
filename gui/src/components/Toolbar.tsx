@@ -8,7 +8,6 @@ export function Toolbar() {
   const sessions = useStore((s) => s.sessions);
   const brief = useStore((s) => s.brief);
   const pendingNodeId = useStore((s) => s.pendingNodeId);
-  const endedSummary = useStore((s) => s.endedSummary);
   const paused = useStore((s) => s.paused);
   const nodes = useStore((s) => s.nodes);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -18,6 +17,12 @@ export function Toolbar() {
     () => sessions.filter((s) => s.has_pending && s.id !== sid).length,
     [sessions, sid]
   );
+
+  // Hide "wrap up" when the pending node is a summary — the summary card owns
+  // the verdict via its own buttons.
+  const pendingIsSummary = pendingNodeId
+    ? nodes[pendingNodeId]?.kind === "summary"
+    : false;
 
   const stop = async () => {
     if (!sid || !pendingNodeId) return;
@@ -38,9 +43,9 @@ export function Toolbar() {
             <a className="gc-btn ghost" href={exportMarkdownUrl(sid)} target="_blank" rel="noreferrer">
               export .md
             </a>
-            {pendingNodeId && (
+            {pendingNodeId && !pendingIsSummary && (
               <button className="gc-btn warn" onClick={stop}>
-                stop
+                wrap up
               </button>
             )}
           </>
@@ -70,11 +75,6 @@ export function Toolbar() {
           ) : (
             <> this question</>
           )}. Push another question from CC to resume.
-        </div>
-      )}
-      {endedSummary && (
-        <div className="gc-ended">
-          <strong>ended:</strong> {endedSummary}
         </div>
       )}
       <SessionPicker open={pickerOpen} onClose={() => setPickerOpen(false)} />

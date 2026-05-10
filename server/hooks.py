@@ -8,7 +8,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from .schemas import GuiAction, HookEvent
-from .state import store
+from .state import SUMMARY_END_ACTIONS, TERMINAL_ACTIONS, store
 
 
 async def hooks_endpoint(request: Request) -> Response:
@@ -111,8 +111,37 @@ async def actions_endpoint(request: Request) -> Response:
             await store.broadcast_session_list()
 
     # Terminal-class clicks bypass the idle timer.
-    if action.action in ("next", "other", "stop", "chat"):
+    if action.action in TERMINAL_ACTIONS:
         store.flush_now(action.session_id, action.node_id)
+
+    # Read the committed record's action (apply_action may remap stop→stop_here
+    # when the node is a summary). Auto-end keys off the COMMITTED action,
+    # not the raw GuiAction — otherwise the remap silently bypasses auto-end.
+    committed = store.get_actions(action.node_id)
+    final_action = committed[-1].action if committed else None
+
+    # Summary-node verdicts auto-end the session server-side. Skill must NOT
+    # call end_session for stop_here / create_plan / implement_now.
+    if final_action in SUMMARY_END_ACTIONS:
+        s2 = store.get(action.session_id)
+        if s2:
+            s2.status = "ended"
+        await store.broadcast(
+            action.session_id,
+            {
+                "type": "session_ended",
+                "session_id": action.session_id,
+                "payload": {"summary": "", "ended_at": time.time()},
+            },
+        )
+        # Skip clearing the summary node itself — wait_for_action may still
+        # be in-flight; clearing _actions[node_id] now would cause the next
+        # poll to return empty. Other nodes have already been read.
+        if s2:
+            for nid in list(s2.nodes.keys()):
+                if nid != action.node_id:
+                    store.clear_node_state(nid)
+        await store.broadcast_session_list()
 
     return JSONResponse({"ok": True, "queued": True})
 
@@ -164,6 +193,16 @@ def _render_md(s, node_id, lines, depth, visited):
     if not n:
         return
     h = "#" * (depth + 2)
+    if n.kind == "summary":
+        lines.append(f"{h} Summary")
+        if n.summary_body:
+            lines.append("")
+            lines.append(n.summary_body)
+        lines.append("")
+        for b in n.branches:
+            if b.child_node_id:
+                _render_md(s, b.child_node_id, lines, depth + 1, visited)
+        return
     flag = " *(implicit)*" if n.implicit else ""
     lines.append(f"{h} {n.question}{flag}")
     if n.reasoning:

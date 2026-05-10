@@ -12,10 +12,11 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { useStore } from "../store";
-import { NODE_H, NODE_W, layoutTree } from "../layout";
+import { NODE_H, NODE_W, SUMMARY_H, SUMMARY_W, layoutTree, type NodeSize } from "../layout";
 import { DecisionNode as DecisionNodeView } from "./DecisionNode";
+import { SummaryNode as SummaryNodeView } from "./SummaryNode";
 
-const nodeTypes = { decision: DecisionNodeView };
+const nodeTypes = { decision: DecisionNodeView, summary: SummaryNodeView };
 const FOCUS_DURATION_MS = 500;
 
 export function Canvas() {
@@ -46,7 +47,7 @@ function CanvasInner() {
     const visible = Object.values(nodes);
     const flowNodes: Node[] = visible.map((n) => ({
       id: n.id,
-      type: "decision",
+      type: n.kind === "summary" ? "summary" : "decision",
       position: { x: 0, y: 0 },
       data: { node: n, isPending: pendingNodeId === n.id },
       draggable: true,
@@ -74,7 +75,13 @@ function CanvasInner() {
         }
       }
     }
-    const laid = layoutTree(flowNodes, flowEdges);
+    const nodeSizes: Record<string, NodeSize> = {};
+    for (const n of visible) {
+      nodeSizes[n.id] = n.kind === "summary"
+        ? { w: SUMMARY_W, h: SUMMARY_H }
+        : { w: NODE_W, h: NODE_H };
+    }
+    const laid = layoutTree(flowNodes, flowEdges, nodeSizes);
     return { rfNodes: laid.nodes, rfEdges: laid.edges };
   }, [nodes, pendingNodeId]);
 
