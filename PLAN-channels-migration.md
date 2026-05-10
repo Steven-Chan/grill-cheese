@@ -204,7 +204,7 @@ Update the example tool calls section to reflect channel wake flow (drop the `wa
 
 Per decision #10 + #11. Picked branch was unresolved at session end ("telemetry shape" got `stop` before pick). **Defaulting to per-session JSONL log** (the recommended branch) — easiest, fits existing on-disk pattern.
 
-New: `~/.grill-cheese/project-{slug}/session/{id}.events.jsonl`
+New: `~/.grill-cheese/project-{slug}/sessions/{id}.events.jsonl`
 
 Append on:
 - `present_branches` call: `{ts, type: "push", node_id, instruction_sent: true}`

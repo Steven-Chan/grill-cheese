@@ -56,7 +56,7 @@ class Store:
     # ---- persistence ----
     def _session_dir(self, project: str) -> pathlib.Path:
         slug = project if project else "_default"
-        return self._data_root / f"project-{slug}" / "session"
+        return self._data_root / f"project-{slug}" / "sessions"
 
     def _persist(self, session: Session) -> None:
         """Atomic write of session JSON. Sync I/O — sessions are KB-scale."""
@@ -71,7 +71,7 @@ class Store:
             logger.exception("persist failed for session %s", session.id)
 
     async def _load_all(self) -> None:
-        """Scan ~/.grill-cheese/project-*/session/*.json and rehydrate.
+        """Scan ~/.grill-cheese/project-*/sessions/*.json and rehydrate.
 
         Discards transient pending_actions per design: a crash mid-debounce
         forfeits not-yet-flushed clicks (visible node state already persisted).
@@ -79,7 +79,7 @@ class Store:
         root = self._data_root
         if not root.exists():
             return
-        for f in sorted(root.rglob("session/*.json")):
+        for f in sorted(root.rglob("sessions/*.json")):
             if f.name.endswith(".bad") or f.name.endswith(".tmp"):
                 continue
             try:

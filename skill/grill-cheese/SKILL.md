@@ -20,7 +20,7 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
    ```
    git rev-parse --show-toplevel 2>/dev/null | xargs basename 2>/dev/null || basename "$PWD"
    ```
-   Save the trimmed output as `project`. Then compose a `title` — short imperative noun phrase, project-style (e.g. `Add billing system`, `Refactor SSE pubsub`). Hard cap **80 chars**, server rejects empty / overlong. Then call `start_session(title=<title>, brief=<the user's plan>, project=<project>)`. Save the returned `session_id`. The server uses `project` to partition session JSON files under `~/.grill-cheese/project-<project>/session/`. The title shows in the toolbar and session picker; the brief lives in a collapsible banner below.
+   Save the trimmed output as `project`. Then compose a `title` — short imperative noun phrase, project-style (e.g. `Add billing system`, `Refactor SSE pubsub`). Hard cap **80 chars**, server rejects empty / overlong. Then call `start_session(title=<title>, brief=<the user's plan>, project=<project>)`. Save the returned `session_id`. The server uses `project` to partition session JSON files under `~/.grill-cheese/project-<project>/sessions/`. The title shows in the toolbar and session picker; the brief lives in a collapsible banner below.
 
 2. **Generate the next question.** Identify the *single most important live decision* given everything you know so far (the brief + every answer the user has given). Frame it as one focused question, like /grill-me would. Generate **2–4 candidate answers** as branches with one-sentence rationales; mark exactly one `is_recommended: true` (your honest pick).
 
@@ -63,7 +63,7 @@ The MCP transport between Claude Code and the server has a ~60s request budget. 
 
 ## Hard rules
 
-- **Always pass `project` to `start_session`.** Run the Bash detection snippet (see step 1) before calling `start_session`. The server requires a non-empty `project` and uses it to partition on-disk session files under `~/.grill-cheese/project-<project>/session/`. Empty `project` returns an error.
+- **Always pass `project` to `start_session`.** Run the Bash detection snippet (see step 1) before calling `start_session`. The server requires a non-empty `project` and uses it to partition on-disk session files under `~/.grill-cheese/project-<project>/sessions/`. Empty `project` returns an error.
 - **NEVER skip the present_branches → wait_for_action loop.** Every decision goes through the GUI. If you're tempted to just decide and move on, that decision is *implicit* — call `record_implicit_decision(session_id, decision, rationale)`. Implicit decisions surface in a separate lane for retroactive grilling.
 - **One present_branches call per logical question.** On empty `actions` (transport timeout), re-poll the SAME `node_id`. Calling `present_branches` again duplicates the node — UX bug.
 - **Use the `antml:parameter` namespace prefix on EVERY param.** When the prefix is missing on `branches` (e.g. `<parameter name="branches">` instead of `<parameter name="branches">`), the harness silently drops the field. Pydantic then errors with `branches Field required` even though it was written. The error message is misleading — the param was sent, just under the wrong namespace, and stripped before the tool saw it. Same risk for any parameter, but `branches` is the one that bites because it's the largest and easiest to lose track of when copy-pasting.
