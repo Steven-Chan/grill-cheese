@@ -96,3 +96,13 @@ def log_notify(session_id: str, node_id: str, seq: int) -> None:
         session_id,
         {"type": "notify", "node_id": node_id, "seq": seq, "ts": time.time()},
     )
+
+
+def forget_session(session_id: str) -> None:
+    """Drop in-memory state for a session — called on end_session.
+
+    Without this, _last_push grows unboundedly: one entry per session id
+    forever. Per session it stays constant size; across many sessions of
+    a long-running server it's a slow leak.
+    """
+    _last_push.pop(session_id, None)

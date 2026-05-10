@@ -4,86 +4,111 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Visual exhaustive `/grill-me` for Claude Code. One MCP server fronts three things at once:
+Visual exhaustive `/grill-me` for Claude Code. Architecture is **two processes**:
 
-- **MCP transport** (`/mcp/`) — tools Claude calls to push decision nodes and block on user picks.
-- **Hooks endpoint** (`/hooks`) — receives every PreToolUse/PostToolUse from CC; attaches the trace to the live decision node.
-- **GUI** (xyflow canvas at `/`) — React frontend; user clicks branches or types free text; SSE streams every state change.
+- **HTTP server** (uvicorn on `127.0.0.1:7878`) — fronts the GUI (xyflow canvas at `/`), SSE event stream (`/events`), GUI action endpoint (`/actions`), CC hooks endpoint (`/hooks`), session export (`/export/<sid>.md`), and a JSON dispatch endpoint for the shim (`/internal/tool/<name>`). Owns all session state. Persists session JSON to `~/.grill-cheese/project-<slug>/sessions/<sid>.json`. Telemetry log at `<sid>.events.jsonl`.
+- **Stdio MCP shim** (`server/shim.py`) — separate process CC spawns at session start. Re-exports the HTTP server's MCP tool surface (minus `wait_for_action` which channels replace). Forwards each tool call as plain HTTP POST to `/internal/tool/<name>`. Subscribes to `/events` SSE and emits `notifications/claude/channel` to CC via stdio when nodes flush. Required because CC's Channels feature only delivers notifications from stdio MCP subprocesses.
 
-Single uvicorn process on `127.0.0.1:7878` does all of it. GUI dist served from `gui/dist/` if built.
+Why two processes: Channels is stdio-only. The HTTP server stays a single uvicorn for GUI/hooks/SSE; the shim is the CC-facing stdio bridge.
 
 ## Commands
 
 ```bash
-# bootstrap (uv creates .venv, installs deps)
+# bootstrap
 uv sync
 cd gui && npm install && npm run build && cd ..
 
-# run server (serves MCP + hooks + SSE + GUI static)
+# run HTTP server (serves hooks + SSE + GUI static + /internal/tool dispatch)
 uv run python -m server.server
 # env: GRILL_CHEESE_HOST, GRILL_CHEESE_PORT (default 127.0.0.1:7878), LOG_LEVEL
 
-# GUI hot-reload (separate from server; vite proxies /events /actions /sessions /snapshot /export)
+# run stdio shim (normally CC spawns this — see claude-mcp-config.example.json)
+uv run python -m server.shim
+
+# GUI hot-reload
 cd gui && npm run dev   # http://127.0.0.1:5173
 
-# in-process smoke for the long-poll loop
-uv run python -m scripts.smoke_e2e
+# in-process smoke for the buffered grill loop
+PYTHONPATH=. uv run python -m scripts.smoke_e2e
 
 # install hooks into ~/.claude/settings.json + drop hook.js into ~/.claude/grill-cheese/
 ./scripts/install-hooks.sh
 
-# install skill into Claude Code
+# install skill
 cp -r skill/grill-cheese ~/.claude/skills/
 
-# register MCP server (merge into ~/.claude.json)
+# register MCP server (merge into ~/.claude.json) — stdio shim entry
 cat claude-mcp-config.example.json
 ```
+
+CC must launch with the channels flag until the shim is plugin-published:
+```
+claude --dangerously-load-development-channels server:grill-cheese
+```
+And CC version ≥ 2.1.80.
 
 No pytest / lint configured. Type-check happens via `tsc -b` inside `npm run build`.
 
 ## Architecture — non-obvious parts
 
-### MCP path rewrite (`server/server.py`)
-Claude Code's MCP HTTP client POSTs to bare `/mcp` (no trailing slash). Starlette `Mount` only matches `/mcp/<...>`, so bare `/mcp` falls through to the GUI static handler → 405. Fix is two ASGI shims:
+### Channels-mode push instead of poll (`server/shim.py` + `skill/grill-cheese/SKILL.md`)
+The skill pushes one `present_branches(...)` per logical question and **ENDS THE TURN**. Channels (notifications/claude/channel) deliver the user's flushed action batch by injecting a `<channel source="grill-cheese" ...>` block into Claude's context, waking a fresh turn. No polling, no blocking waits.
 
-- `_McpPathFixup` rewrites `/mcp` → `/mcp/` BEFORE the router runs (must be outermost wrapper, hence `app = _McpPathFixup(_inner_app)`).
-- `_McpRouter` strips the Mount prefix and forwards to the inner FastMCP app with path `/` (since `streamable_http_path="/"`).
+The shim does the bridging: it subscribes to the HTTP server's `/events` SSE, and on every `node_committed` event emits one channel notification carrying `{session_id, node_id, seq, actions}`. The skill tracks `last_seen_seq` mentally and falls back to `get_session_snapshot` if seq jumps (snapshot-on-wake resilience for missed events).
 
-If you touch routing, keep this layering. GUI static is mounted last as catch-all `/`.
+Tool result of `present_branches` / `present_summary` includes an `instruction` field with literal `TURN_OVER. Stop generating. ...` — server-side hint to reinforce the end-turn rule.
 
-### Two-call grill loop, NOT one (`server/mcp_app.py` + `skill/grill-cheese/SKILL.md`)
-CC's MCP HTTP transport has a ~60s request budget; humans take longer. So a logical "ask user" is split:
+### MCP path rewrite on the HTTP server (`server/server.py`)
+CC's MCP HTTP client (used in legacy non-channels mode) POSTs to bare `/mcp` (no trailing slash). Starlette `Mount` only matches `/mcp/<...>`, so bare `/mcp` falls through to the GUI static handler → 405. Two ASGI shims fix it:
+- `_McpPathFixup` rewrites `/mcp` → `/mcp/` BEFORE the router (outermost wrapper).
+- `_McpRouter` strips the Mount prefix and forwards to the inner FastMCP app with path `/`.
 
-1. `present_branches(...)` → returns instantly with `{node_id}`.
-2. `wait_for_action(node_id, timeout=50s)` → long-polls; returns `{action: "skip"}` on timeout. Skill MUST re-poll the same `node_id`, NOT call `present_branches` again (that duplicates the node on the canvas).
-
-`store.set_action` is first-write-wins idempotent; `wait_for_action` returns the committed action on every subsequent call. The old single-call `ask_branches` was removed for this reason — see comment in `mcp_app.py`. Don't reintroduce a wrapper.
+The `/mcp` route is kept for legacy/fallback use, but the shim is the canonical path.
 
 ### Branch state machine (`server/state.py::apply_action`)
 GUI actions and their server effect:
 
-| action          | commits `wait_for_action`? | side effect |
-|-----------------|----------------------------|-------------|
-| `next`          | yes (`chosen_branch_id` set) | branch → `chosen`; demote prior chosen on same node |
-| `other`         | yes (`note` set)             | stores `user_note` on node |
-| `mark_rejected` | no (tagging only)            | branch → `rejected` |
-| `unmark`        | no                           | branch → `considered` |
-| `stop`          | yes                          | none |
+| action            | commits the buffer? | side effect |
+|-------------------|---------------------|-------------|
+| `next`            | yes (`chosen_branch_id` set) | branch → `chosen`; demote prior chosen on same node |
+| `other`           | yes (`note` set)             | stores `user_note` on node |
+| `chat`            | yes (immediate flush)        | session paused, node locked |
+| `stop`            | yes                          | summary card next, NOT end-of-session |
+| `stop_here` / `create_plan` / `implement_now` | yes (auto-end) | server ends session in `hooks.py:actions_endpoint` |
+| `continue_grill`  | yes                          | synthesizes branch on summary node, session continues |
 
-Tagging-only actions broadcast `node_updated` so GUI re-renders, but never fire the per-node asyncio Event.
+Buffered with 750ms idle window; terminal-class clicks bypass via `flush_now`. Flush assigns a per-session monotonic `seq` and emits `node_committed` SSE → shim → channel notification.
+
+### Snapshot-on-wake resilience (`skill/grill-cheese/SKILL.md`)
+Channels are fire-and-forget. If shim dies mid-session, restarts, or the SSE ring-buffer replay re-fires already-delivered events, the skill must reconcile. Pattern: track `last_seen_seq`; if next wake's seq is not `last_seen_seq + 1`, call `get_session_snapshot(session_id)` and replay any flushed nodes you missed. The shim also buffers SSE events that arrive before its stdio session is ready (drained on session start).
 
 ### SSE pub/sub (`server/sse.py` + `server/state.py`)
-Per-session channel + global channel (for the index page that lists active sessions). Each session has a 5000-event ring buffer replayed to new subscribers. 15s heartbeat (`ping` event). Disconnect detection via `request.is_disconnected()` polled between queue gets.
+Per-session channel + global channel (for the index page). Each session has a 5000-event ring buffer replayed to new subscribers. 15s heartbeat (`ping` event). Disconnect via `request.is_disconnected()`. The shim is now a long-lived consumer of this stream alongside the GUI.
 
 ### Hook → node linking (`server/hooks.py`)
-CC hook script (`scripts/install-hooks.sh` writes `~/.claude/grill-cheese/hook.js`) POSTs raw hook payload to `/hooks`. The grill-cheese skill is supposed to inject `_grill_node_id` / `_grill_session_id` into `tool_input` so server can attach the trace to the right decision node. Without those, traces land in `_unbound` bucket. Hook script has 1s stdin + 1s HTTP hard-kill — never blocks Claude.
+CC hook script (`scripts/install-hooks.sh` writes `~/.claude/grill-cheese/hook.js`) POSTs raw hook payload to `/hooks`. The grill-cheese skill injects `_grill_node_id` / `_grill_session_id` into `tool_input` so server can attach the trace to the right decision node. Without those, traces land in `_unbound` bucket. Hook script has 1s stdin + 1s HTTP hard-kill — never blocks Claude.
+
+### Telemetry (`server/telemetry.py`)
+Per-session JSONL log at `~/.grill-cheese/project-<slug>/sessions/<sid>.events.jsonl`. Three event types:
+- `push` — written from `present_branches` / `present_summary`
+- `next_call` — written from `internal_dispatch` for every tool call; flags `violation: true` when the gap from prior `push` is <100ms AND the tool isn't in the post-push allowlist (`apply_chat_result`, `get_session_snapshot`, `end_session`, `resume_session_tool`, `record_implicit_decision`)
+- `notify` — written via `/internal/telemetry/notify` POST from the shim every time it emits a channel notification
+
+`_last_push` in-memory map is cleared on `end_session` (and on summary auto-end in `hooks.py`) to prevent leak across many sessions.
+
+Drives two deferred decisions:
+- yield_turn() escalation if violation rate >5% over a session sample
+- prompt cache TTL diagnostics (long gaps between `notify` events = blown 5min cache window)
 
 ### Frontend layout
-GUI is `gui/`: React 18 + xyflow + dagre + zustand. Canvas renders the full decision tree. State in `gui/src/store.ts`; SSE wiring in `gui/src/sse.ts`; layout math in `gui/src/layout.ts`.
+GUI is `gui/`: React 18 + xyflow + dagre + zustand. Canvas renders the full decision tree. State in `gui/src/store.ts`; SSE wiring in `gui/src/sse.ts`; layout math in `gui/src/layout.ts`. `node_committed` payload now carries a `seq` field — keep `gui/src/types.ts` in sync.
 
 ## When editing
 
-- Don't add a single-call wrapper around `present_branches` + `wait_for_action`. The split is load-bearing for transport-retry safety.
-- Pydantic schemas in `server/schemas.py` are the contract for both MCP tool I/O and SSE events. Adding a field → update schema + GUI `gui/src/types.ts`.
-- The skill at `skill/grill-cheese/SKILL.md` documents the protocol Claude must follow. If you change MCP tool surface, update the skill too — they're tightly coupled.
-- Server holds all state in-process (`store` singleton in `server/state.py`); restart drops sessions. No persistence layer — don't add one without reason.
+- **Channels are stdio-only.** Don't try to add channel emit to the HTTP MCP path — it won't be delivered. The shim is the only correct place.
+- **Don't reintroduce `wait_for_action`.** Skill loop is push-and-end-turn; reverting to poll defeats the latency win and breaks the seq protocol.
+- **Don't add a single-call wrapper around push+wait.** Same duplicate-node bug as before. Push, end turn, channel wakes you.
+- **Pydantic schemas in `server/schemas.py`** are the contract for both MCP tool I/O and SSE events. Adding a field → update schema + GUI `gui/src/types.ts` + the channel payload shape in `server/shim.py:_emit_channel`.
+- **Skill at `skill/grill-cheese/SKILL.md`** documents the channels protocol. If you change MCP tool surface or `node_committed` payload, update the skill — they're tightly coupled.
+- **Sessions persist** to `~/.grill-cheese/project-<slug>/sessions/<sid>.json`. Server restart rehydrates. Telemetry .jsonl is append-only; don't truncate without reason.
+- **The shim uses `server._handle_message`** (private mcp lib API) to drive the session loop while owning the `ServerSession` handle. Will silently break if mcp lib renames the method or its signature changes; see comment in `server/shim.py:main` for context.

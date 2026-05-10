@@ -12,7 +12,7 @@ from .schemas import (
     ChatOps,
 )
 from .state import store
-from .telemetry import log_push
+from .telemetry import forget_session, log_push
 
 TITLE_MAX = 80
 
@@ -404,6 +404,7 @@ async def end_session(session_id: str, summary: str = "") -> dict:
         for node_id in list(s.nodes.keys()):
             store.clear_node_state(session_id, node_id)
         store._persist(s)
+    forget_session(session_id)
     await store.broadcast_session_list()
     return {"ok": True}
 

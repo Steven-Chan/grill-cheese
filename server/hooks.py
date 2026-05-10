@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse, Response
 
 from .schemas import GuiAction, HookEvent
 from .state import SUMMARY_END_ACTIONS, TERMINAL_ACTIONS, store
+from .telemetry import forget_session
 
 
 async def hooks_endpoint(request: Request) -> Response:
@@ -173,6 +174,7 @@ async def actions_endpoint(request: Request) -> Response:
                 if nid != action.node_id:
                     store.clear_node_state(action.session_id, nid)
             store._persist(s2)
+        forget_session(action.session_id)
         await store.broadcast_session_list()
 
     return JSONResponse({"ok": True, "queued": True})

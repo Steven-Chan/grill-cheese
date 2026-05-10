@@ -122,6 +122,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[t.TextContent]
 # ---- SSE -> channel notification bridge --------------------------------
 
 _session_holder: dict[str, ServerSession | None] = {"session": None}
+# Buffer for node_committed events that arrive before the stdio session is
+# ready (fresh shim subscribing while the SSE ring buffer replays prior
+# committed events). Drained as soon as session is set.
+_pending_emits: list[dict[str, Any]] = []
 
 
 async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> None:
@@ -184,7 +188,9 @@ async def _sse_subscriber() -> None:
                             continue
                         sess = _session_holder["session"]
                         if sess is None:
-                            _log("node_committed but no live MCP session yet; dropping")
+                            # buffer until session is ready (will be drained on session start)
+                            _pending_emits.append(data)
+                            _log(f"buffered node_committed (session not ready); pending={len(_pending_emits)}")
                             continue
                         await _emit_channel(sess, data)
         except Exception as e:
@@ -212,15 +218,28 @@ async def main() -> None:
         _log("Start it with: uv run python -m server.server")
         sys.exit(1)
 
-    sse_task = asyncio.create_task(_sse_subscriber())
-
     async with stdio_server() as (read_stream, write_stream):
-        # Grab live session via a small monkey: ServerSession is constructed
-        # inside server.run; capture it from request_context once a tool fires,
-        # OR construct manually so we always have it.
+        # ServerSession is constructed manually (not via server.run) so we
+        # can hold a handle and emit notifications from the SSE bridge task
+        # outside any tool-call context. server.run() builds + owns its own
+        # ServerSession internally and would not expose it.
         async with ServerSession(read_stream, write_stream, init_opts) as session:
             _session_holder["session"] = session
+            # Drain anything the SSE bridge buffered while session was None
+            # (e.g. ring-buffer replay on subscribe before this point).
+            for buf in list(_pending_emits):
+                await _emit_channel(session, buf)
+            _pending_emits.clear()
+            # Start the SSE subscriber AFTER session is set so its first
+            # delivery doesn't race the holder write. Buffering above is
+            # belt-and-suspenders for shim-restart cases.
+            sse_task = asyncio.create_task(_sse_subscriber())
             try:
+                # _handle_message is a private mcp lib method — used here
+                # because server.run() doesn't let us pre-create the session
+                # for outside-of-tool notification emission. If mcp lib
+                # rev'ing breaks this signature, see server.run() in
+                # mcp/server/lowlevel/server.py for the canonical loop.
                 async for message in session.incoming_messages:
                     await server._handle_message(message, session, {}, raise_exceptions=False)
             finally:

@@ -1,0 +1,24 @@
+// Example mcp registration for ~/.claude.json — JSONC variant with comments.
+// Copy the OBJECT (not the file) into the existing "mcpServers" map.
+//
+// Recommended: stdio shim entry. Channels (push-based wakes) require this.
+// Launch CC with:
+//   claude --dangerously-load-development-channels server:grill-cheese
+// Requires CC v2.1.80+.
+{
+  "mcpServers": {
+    "grill-cheese": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "server.shim"],
+      "cwd": "/Users/hoyin/Documents/grill-cheese"
+    }
+    // Legacy direct-HTTP MCP (no channels, polling-mode wait_for_action
+    // was removed from the tool surface — this entry is only useful for
+    // /sessions debugging via curl, not for live grilling):
+    //
+    // "grill-cheese-http-debug": {
+    //   "type": "http",
+    //   "url": "http://127.0.0.1:7878/mcp"
+    // }
+  }
+}
