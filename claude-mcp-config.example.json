@@ -1,6 +1,14 @@
 {
+  "_comment": "Two registration styles. Pick ONE. Channels-mode requires the stdio shim.",
   "mcpServers": {
     "grill-cheese": {
+      "_comment_stdio_channels": "RECOMMENDED — stdio shim. Required for CC Channels (push-based wakes). Launch CC with: claude --dangerously-load-development-channels server:grill-cheese",
+      "command": "uv",
+      "args": ["run", "python", "-m", "server.shim"],
+      "cwd": "/Users/hoyin/Documents/grill-cheese"
+    },
+    "grill-cheese-http-legacy": {
+      "_comment_http_legacy": "Direct HTTP MCP. Polling-mode only — no Channels. Kept for fallback.",
       "type": "http",
       "url": "http://127.0.0.1:7878/mcp"
     }
