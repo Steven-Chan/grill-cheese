@@ -70,15 +70,12 @@ function CanvasInner() {
         if (b.child_node_id && visibleIds.has(b.child_node_id)) {
           const isChosenPath = b.id === n.chosen_branch_id;
           const isRemoved = removedSet.has(b.id);
-          // redirect edges (chatted node abandoned) carry a special label
           const isRedirectEdge = !!n.redirected;
-          const edgeLabel = isRedirectEdge ? `redirected: ${b.label}` : b.label;
           flowEdges.push({
             id: `${n.id}:${b.id}`,
             source: n.id,
             sourceHandle: b.id,
             target: b.child_node_id,
-            label: edgeLabel,
             animated: isChosenPath || isRedirectEdge,
             style: {
               stroke: isChosenPath
@@ -90,7 +87,6 @@ function CanvasInner() {
               opacity: isRemoved ? 0.25 : 1,
               strokeDasharray: isRedirectEdge ? "6 4" : undefined,
             },
-            labelStyle: { fontSize: 11, fontFamily: "var(--gc-mono)" },
           });
         }
       }
