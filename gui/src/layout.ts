@@ -1,8 +1,8 @@
 import dagre from "dagre";
 import type { Edge, Node } from "@xyflow/react";
 
-const NODE_W = 360;
-const NODE_H = 220;
+export const NODE_W = 360;
+export const NODE_H = 220;
 
 export function layoutTree(nodes: Node[], edges: Edge[]): { nodes: Node[]; edges: Edge[] } {
   const g = new dagre.graphlib.Graph();

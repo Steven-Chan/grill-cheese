@@ -430,3 +430,20 @@ body,
 .react-flow__edge-textbg {
   fill: var(--gc-bg);
 }
+
+/* jump-to-pending overlay button (auto-focus on new node respects user pan) */
+.gc-jump-btn {
+  background: var(--gc-bg-card);
+  color: var(--gc-fg);
+  border: 1px solid var(--gc-rec);
+  border-radius: 4px;
+  padding: 8px 14px;
+  font-family: var(--gc-mono);
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.gc-jump-btn:hover {
+  background: var(--gc-bg-elev);
+  color: var(--gc-rec);
+}

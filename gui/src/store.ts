@@ -10,6 +10,7 @@ interface State {
   pendingNodeId: string | null; // node currently awaiting user action
   endedSummary: string | null;
   paused: PausedState | null; // chat-handoff: session paused, user in CC
+  userPanned: boolean; // user manually moved viewport since last new node
 
   setActive(sid: string): void;
   setBrief(b: string): void;
@@ -22,6 +23,7 @@ interface State {
   setEnded(summary: string): void;
   setPaused(p: PausedState): void;
   setResumed(): void;
+  setUserPanned(v: boolean): void;
 }
 
 export const useStore = create<State>((set) => ({
@@ -33,6 +35,7 @@ export const useStore = create<State>((set) => ({
   pendingNodeId: null,
   endedSummary: null,
   paused: null,
+  userPanned: false,
 
   setActive: (sid) =>
     set(() => ({
@@ -42,12 +45,14 @@ export const useStore = create<State>((set) => ({
       pendingNodeId: null,
       endedSummary: null,
       paused: null,
+      userPanned: false,
     })),
   setBrief: (b) => set(() => ({ brief: b })),
   addNode: (n) =>
     set((s) => ({
       nodes: { ...s.nodes, [n.id]: n },
       pendingNodeId: n.id,
+      userPanned: false, // new node arrived → fresh chance to auto-focus
     })),
   updateNode: (n) =>
     set((s) => ({
@@ -73,9 +78,18 @@ export const useStore = create<State>((set) => ({
       pendingNodeId: null,
       endedSummary: null,
       paused: null,
+      userPanned: false,
     })),
   setEnded: (summary) => set(() => ({ endedSummary: summary, pendingNodeId: null, paused: null })),
-  // pause clears pending so branch buttons go inert while user is back in CC
-  setPaused: (p) => set(() => ({ paused: p, pendingNodeId: null })),
+  // pause is a session-status flip; node stays pending so its buttons remain
+  // active. User can pick / type other / chat-again while paused.
+  setPaused: (p) =>
+    set((s) => ({
+      paused: p,
+      // restore pending to the paused node if it was lost (e.g., SSE replay
+      // after refresh) — buttons must always be live on the paused node.
+      pendingNodeId: s.pendingNodeId ?? p.node_id,
+    })),
   setResumed: () => set(() => ({ paused: null })),
+  setUserPanned: (v) => set(() => ({ userPanned: v })),
 }));
