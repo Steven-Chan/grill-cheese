@@ -1,4 +1,4 @@
-import { useStore } from "./store";
+import type { SessionMeta } from "./types";
 
 export type ActionKind =
   | "next"
@@ -18,6 +18,12 @@ export interface ActionOpts {
   note?: string;
 }
 
+export interface ActionRejection {
+  status: number;
+  err?: string;
+}
+
+// Throws ActionRejection on 4xx (caller maps to UX); throws Error on other failures.
 export async function postAction(
   session_id: string,
   node_id: string,
@@ -37,30 +43,18 @@ export async function postAction(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (res.status === 409) {
-    let body: { err?: string } = {};
+  if (res.status === 409 || (res.status >= 400 && res.status < 500)) {
+    let payload: { err?: string } = {};
     try {
-      body = await res.json();
+      payload = await res.json();
     } catch {
-      // ignore parse failure; show generic message
+      // ignore parse failure
     }
-    if (body.err === "branch_removed") {
-      useStore.getState().setToast(
-        "This option was removed in a recent chat."
-      );
-    } else if (body.err === "node locked") {
-      useStore.getState().setToast(
-        "This question is already settled."
-      );
-    } else {
-      useStore.getState().setToast(`Action rejected: ${body.err ?? res.status}`);
-    }
-    return;
+    const rej: ActionRejection = { status: res.status, err: payload.err };
+    throw rej;
   }
   if (!res.ok) throw new Error(`action ${action} failed: ${res.status}`);
 }
-
-import type { SessionMeta } from "./types";
 
 export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {
   const r = await fetch("/sessions");
@@ -69,6 +63,7 @@ export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {
 
 export async function getSnapshot(sid: string) {
   const r = await fetch(`/snapshot/${sid}`);
+  if (!r.ok) throw new Error(`snapshot ${sid} failed: ${r.status}`);
   return r.json();
 }
 
@@ -81,10 +76,4 @@ export async function deleteSession(sid: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`delete failed: ${res.status}`);
   }
-}
-
-export async function exportJson(sid: string): Promise<Blob> {
-  const r = await fetch(`/snapshot/${sid}`);
-  const text = await r.text();
-  return new Blob([text], { type: "application/json" });
 }

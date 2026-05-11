@@ -1,21 +1,25 @@
-import { useStore } from "./store";
-import type { HookTrace, SseEvent } from "./types";
+import type { SseEvent } from "./types";
 
-let es: EventSource | null = null;
-let currentSid: string | null | undefined = undefined;
-
-export function connectSse(sessionId: string | null) {
-  if (es && currentSid === sessionId) return;
-  if (es) {
-    es.close();
-    es = null;
-  }
-  currentSid = sessionId;
+// Open a per-session SSE stream. `sessionId === null` → global stream
+// (carries session_list, session_started, session_deleted).
+// Returns a cleanup function — caller (useEffect) must call it on unmount.
+export function openSse(sessionId: string | null, onEvent: (ev: SseEvent) => void): () => void {
   const url = sessionId ? `/events?session=${sessionId}` : "/events";
-  es = new EventSource(url);
+  const es = new EventSource(url);
+
+  const handle = (raw: string) => {
+    if (!raw) return;
+    let parsed: SseEvent;
+    try {
+      parsed = JSON.parse(raw) as SseEvent;
+    } catch {
+      return;
+    }
+    onEvent(parsed);
+  };
+
   es.onmessage = (e) => handle(e.data);
-  // sse-starlette emits named events; listen to all our types
-  for (const t of [
+  const types = [
     "hello",
     "ping",
     "session_started",
@@ -29,77 +33,15 @@ export function connectSse(sessionId: string | null) {
     "node_resolved",
     "node_committed",
     "hook_event",
-  ]) {
+  ];
+  for (const t of types) {
     es.addEventListener(t, (e: MessageEvent) => handle(e.data));
   }
   es.onerror = () => {
-    // browser auto-reconnects EventSource
+    // browser auto-reconnects EventSource; no-op
   };
-}
 
-function handle(raw: string) {
-  if (!raw) return;
-  let ev: SseEvent;
-  try {
-    ev = JSON.parse(raw) as SseEvent;
-  } catch {
-    return;
-  }
-  const s = useStore.getState();
-  switch (ev.type) {
-    case "session_list":
-      s.setSessions(ev.payload.sessions);
-      break;
-    case "session_started":
-      s.setTitle(ev.payload.title);
-      s.setBrief(ev.payload.brief);
-      if (!s.activeSessionId) s.setActive(ev.session_id);
-      break;
-    case "session_ended":
-      s.setEnded(ev.payload.summary);
-      break;
-    case "session_deleted": {
-      const deletedSid = ev.session_id;
-      const project = ev.payload.project;
-      if (s.activeSessionId === deletedSid) {
-        // pick most-recent same-project survivor; fallback to reset.
-        // session_list re-broadcast lands shortly after; we read current
-        // sessions list and exclude the deleted sid manually.
-        const survivors = s.sessions
-          .filter((x) => x.id !== deletedSid && (x.project ?? "") === (project ?? ""))
-          .sort((a, b) => b.started_at - a.started_at);
-        if (survivors.length > 0) {
-          s.setActive(survivors[0].id);
-        } else {
-          s.reset();
-        }
-      }
-      break;
-    }
-    case "session_paused":
-      s.setPaused({ node_id: ev.payload.node_id, branch_id: ev.payload.branch_id });
-      break;
-    case "session_resumed":
-      s.setResumed();
-      break;
-    case "node_added":
-      s.addNode(ev.payload);
-      break;
-    case "node_updated":
-      s.updateNode(ev.payload);
-      break;
-    case "node_resolved":
-      s.setNodeResolved(ev.payload.node_id);
-      break;
-    case "node_committed": {
-      const last = ev.payload.actions?.[ev.payload.actions.length - 1];
-      s.setNodeCommitted(ev.payload.node_id, last?.action ?? null);
-      break;
-    }
-    case "hook_event":
-      s.appendHook(ev.payload as HookTrace);
-      break;
-    default:
-      break;
-  }
+  return () => {
+    es.close();
+  };
 }
