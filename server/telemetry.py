@@ -30,6 +30,10 @@ _ALLOWLISTED_AFTER_PUSH = {
     "end_session",
     "resume_session_tool",
     "record_implicit_decision",
+    # inline-chat: chat replies fire after a chat_message channel wake, not
+    # a push wake; exempt from <100ms violation flag.
+    "post_chat_message",
+    "propose_chat_outcome",
 }
 
 VIOLATION_GAP_MS = 100.0

@@ -1,4 +1,12 @@
-import type { CmuxInfo, DecisionNode, PausedState, SessionMeta, SessionStatus } from "./types";
+import type {
+  ChatMessage,
+  CmuxInfo,
+  DecisionNode,
+  PausedState,
+  PendingProposal,
+  SessionMeta,
+  SessionStatus,
+} from "./types";
 
 // Per-session reducer state. List state lives separately (useReducer in list page).
 export interface SessionState {
@@ -33,7 +41,10 @@ export type SessionAction =
   | { type: "session_wrap" }
   | { type: "node_added"; node: DecisionNode }
   | { type: "node_updated"; node: DecisionNode }
-  | { type: "node_committed"; node_id: string; action: string | null };
+  | { type: "node_committed"; node_id: string; action: string | null }
+  | { type: "chat_message_added"; node_id: string; message: ChatMessage }
+  | { type: "chat_proposal_staged"; node_id: string; proposal: PendingProposal }
+  | { type: "chat_closed"; node_id: string };
 
 export interface Snapshot {
   id: string;
@@ -200,6 +211,34 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const next = { ...state, nodes, wrapping };
       next.pendingNodeId = findPending(next);
       return next;
+    }
+    case "chat_message_added": {
+      const n = state.nodes[action.node_id];
+      if (!n) return state;
+      // idempotent append guard — SSE replay on subscribe can re-deliver
+      const seen = (n.chat_messages ?? []).some((m) => m.msg_id === action.message.msg_id);
+      const messages = seen
+        ? (n.chat_messages ?? [])
+        : [...(n.chat_messages ?? []), action.message];
+      const updated: DecisionNode = { ...n, chat_messages: messages };
+      return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
+    }
+    case "chat_proposal_staged": {
+      const n = state.nodes[action.node_id];
+      if (!n) return state;
+      const updated: DecisionNode = { ...n, pending_proposal: action.proposal };
+      return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
+    }
+    case "chat_closed": {
+      const n = state.nodes[action.node_id];
+      if (!n) return state;
+      const updated: DecisionNode = {
+        ...n,
+        chat_open: false,
+        chat_messages: [],
+        pending_proposal: null,
+      };
+      return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
     }
     default:
       return state;

@@ -6,7 +6,10 @@ export type ActionKind =
   | "stop_here"
   | "create_plan"
   | "implement_now"
-  | "continue_grill";
+  | "continue_grill"
+  | "chat_user_msg"
+  | "chat_accept"
+  | "chat_close";
 
 export interface ActionOpts {
   // plural pick set for action=next (radio = length 1, multi = ≥1)
@@ -15,6 +18,12 @@ export interface ActionOpts {
   branch_id?: string;
   // typed text — server synthesizes a user_authored Branch on next
   note?: string;
+  // inline-chat: thread id (client-generated, stable for the chat lifetime)
+  chat_id?: string;
+  // inline-chat: per-message uuid (action=chat_user_msg)
+  msg_id?: string;
+  // inline-chat: typed message text (action=chat_user_msg)
+  text?: string;
 }
 
 export interface ActionRejection {
@@ -36,6 +45,9 @@ export async function postAction(
     branch_ids: opts?.branch_ids ?? [],
     branch_id: opts?.branch_id,
     note: opts?.note,
+    chat_id: opts?.chat_id,
+    msg_id: opts?.msg_id,
+    text: opts?.text,
   };
   const res = await fetch("/api/actions", {
     method: "POST",

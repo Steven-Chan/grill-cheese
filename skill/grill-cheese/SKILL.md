@@ -35,7 +35,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 
 3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth, multi_select?)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
 
-4. **On wake — read the `<channel>` block.** When you see input that contains a `<channel source="grill-cheese" ...>` block (in the user message), parse its JSON content. Two payload shapes:
+4. **On wake — read the `<channel>` block.** When you see input that contains a `<channel source="grill-cheese" ...>` block (in the user message), parse its JSON content. Three payload shapes:
 
    **A. node-commit wake (most common):**
    ```
@@ -65,13 +65,27 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
    - Means: user wants a verdict card. The pre-wrap pending node (if any) is now read-only — server gates `next` / `chat` against it until `continue_grill` un-wraps or a terminal verdict ends the session.
    - Respond by calling `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<latest decision node id, optional>, parent_branch_id=<a chosen branch id, optional>)` and END TURN. Do NOT call `end_session`. Next wake delivers the verdict on the summary node via shape A.
 
+   **C. inline-chat message wake:**
+   ```
+   <channel source="grill-cheese" session_id="ab12cd34" node_id="n3" chat_id="abc..." kind="chat_message">
+   {"type": "chat_message", "session_id": "ab12cd34", "node_id": "n3",
+    "chat_id": "abc...", "msg_id": "m1...", "text": "Actually, can you elaborate on metering tradeoffs?",
+    "seq": 7}
+   </channel>
+   ```
+   - Means: the user typed a message in the inline-chat panel on node `n3`. Recognise by top-level `type == "chat_message"`.
+   - Reply with `post_chat_message(session_id, node_id, chat_id, msg_id=<new uuid>, text=<your reply>)` — call ONCE per assistant reply, then END TURN.
+   - When the chat has reached an answer, call `propose_chat_outcome(session_id, node_id, chat_id, outcome, summary, ops?)` to stage the outcome — the user clicks Accept in the GUI to commit. Do NOT call `apply_chat_result` from this flow; the GUI Accept button is the canonical commit path.
+   - `seq` is on the same per-session monotonic counter as shape A. Track it the same way.
+   - See **Inline chat** section below for full semantics.
+
 5. **Read the batch as a narrative and decide what to ask next.**
 
    The batch is usually a single terminal click; occasionally it bundles a chat trigger that flushed in the same idle window. The last terminal-class action is the user's final word.
 
    - **`action == "next"`** → user submitted picks. Read `chosen_branch_labels` (LIST). Single-mode = one label; multi-mode = N labels. If a label corresponds to a synth `user_authored` branch (label is the first 60 chars of typed text), treat that segment as the user's literal free-text answer — it carries the same weight as a chat redirect. `note` (if set) is the raw typed text echo and may be slightly longer than the synth label.
    - **`type == "session_wrap"`** (shape B wake, no per-action) → user clicked **wrap up** in the toolbar. Call `present_summary(...)` with a full chain markdown recap. END TURN. The next channel wake delivers the verdict-action (shape A); see "Ending" below. Do NOT call `end_session`.
-   - **`action == "chat"`** → user paused the grill to chat about this node in CC. Server marked the session paused and locked this node. `chat_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`**. Do NOT push another node yet — instead reply conversationally in CC. When the user signals "back to grilling", call `apply_chat_result(...)` (see "Chat as decision" below) — that lands the chat outcome and resumes the session.
+   - **`action == "chat"`** → user opened an INLINE chat panel on this node. Server marked the session paused, locked the node, and set `chat_open=True`. The conversation lives in the GUI card, not in CC. **Do NOT reply in CC.** **Do NOT call `apply_chat_result`.** **Do NOT call `end_session`.** Just END TURN — the next channel wake will be a `chat_message` (shape C) carrying the user's first typed message. See **Inline chat** section below.
    - **`action == "stop_here"`** → summary verdict: user approved, no further action. Server has already ended the session. Point user at the export. Do NOT call `end_session`.
    - **`action == "create_plan"`** → summary verdict: user approved, wants a detailed implementation plan first (not code). `chain_markdown` carries the full chosen-path recap. Use it to draft a plan (markdown doc, ordered task list, file-level breakdown). Server has already ended the session. Do NOT call `end_session`.
    - **`action == "implement_now"`** → summary verdict: user approved, wants code now. `chain_markdown` carries the full chosen-path recap. Start coding immediately based on the decisions. Server has already ended the session. Do NOT call `end_session`.
@@ -102,7 +116,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 - **Take typed answers literally.** Synth `user_authored` branches in `chosen_branch_labels` (or `note`) carry the user's literal words. If the user types "actually let's stop and look at X instead", do that. Don't paraphrase or pick the closest pre-existing branch. The text input exists to let the user override your option set.
 - **Respect chat-removed branches.** Read `node.removed_branch_ids` from the snapshot before composing follow-up branches. Do not re-surface a branch that chat removed.
 - **Track `last_seen_seq` per session.** It comes in every `<channel>` block. If the next wake's `seq` is not exactly `last_seen_seq + 1`, fall back to `get_session_snapshot` to catch up — flushed-but-not-delivered nodes will surface as `is_flushed: true` with `committed_actions` populated.
-- **On `chat`: NEVER call `end_session`.** Chat pauses the session, it does not end it. The chatted node is locked (cannot be answered further until apply_chat_result lands). Continue in plain chat; when ready to keep grilling, call `apply_chat_result(...)` — see "Chat as decision".
+- **On `chat`: NEVER call `end_session`, NEVER call `apply_chat_result`, NEVER reply in CC.** Chat is inline in the GUI. Just END TURN; the channel will deliver the user's typed messages as shape-C wakes. Reply via `post_chat_message`. Stage outcome via `propose_chat_outcome`. The GUI Accept button commits server-side without involving you.
 - **On `session_wrap` (toolbar wrap-up): NEVER call `end_session` directly.** Always call `present_summary` first — the user gets a verdict card with four options (`stop_here` / `create_plan` / `implement_now` / `continue_grill`) and the session ends only after they pick a terminal verdict (server-side, automatically).
 - **For summary verdicts (`stop_here` / `create_plan` / `implement_now`): NEVER call `end_session`.** The server has already ended the session. Calling it again is harmless but pointless. `end_session` remains only as an escape hatch for crashes / explicit bailout.
 
@@ -114,44 +128,68 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 
 When calling `present_branches` for a child, pass `parent_node_id` and `parent_branch_id`. The server uses these to wire the tree on the canvas. Carry the path in your own reasoning too — every question is conditioned on the chain of answers above it.
 
-## Chat as decision
+## Inline chat
 
-When the user clicks **chat** on a node (or a specific branch), the server pauses the session and locks the node. The channel wake delivers `action == "chat"`. **Do not push another node yet.** Reply conversationally in CC — the user wants to discuss this node, not move on. When they signal "resume" / "back to grilling" / "ok keep going", you must land the chat by calling `apply_chat_result` exactly once. That unlocks the node, mutates it per the chat outcome, and flips the session back to active. Then push the next `present_branches` (and end turn).
+When the user clicks **chat** on a node, the server pauses the session, locks the node, and sets `chat_open=True`. The conversation lives in the GUI chat panel on the node card — **NOT** in CC. Channels deliver every typed user message as shape-C wakes; you reply with `post_chat_message`. When you judge the chat has reached an answer, you stage an outcome via `propose_chat_outcome`. The user clicks **Accept** in the GUI to commit (server-side, no further roundtrip).
 
-Pick **one outcome** based on what actually happened in the chat:
+### Wake sequence
 
-- **`refine`** — the original question still stands, but the chat sharpened the option set. Pass `ops` with `adds` (new branches the chat surfaced) and/or `removes` (branch ids the chat killed). Existing branches NOT in `ops.adds`/`ops.removes` stay untouched. To "edit" a branch, remove the old + add a new one — never silently rewrite. After apply, the node is unlocked; user picks one of the (now updated) branches.
-- **`redirect`** — the chat revealed the question is wrong. Original node gets marked `redirected` (greyed on canvas). The response includes `redirect_branch_id` — a synthesized branch on the chatted node. You MUST pass it as `parent_branch_id` on the next `present_branches` call so the post-redirect question wires correctly on canvas. `parent_node_id` = the chatted node id.
-- **`resolve`** — the chat itself produced the answer; no further branching needed. Server synthesizes a chosen branch on the node (label = first 60 chars of your chat_summary) and sets `chosen_branch_ids = [synth_id]`. Future drilling chains off that synthetic branch.
+1. **First wake — `action == "chat"` (shape A):** the GUI opened the chat panel. The user has not typed anything yet. **END TURN.** Do NOT reply, do NOT call any tool.
+2. **Subsequent wakes — `type == "chat_message"` (shape C):** the user typed a message. The channel block carries `{session_id, node_id, chat_id, msg_id, text, seq}`.
+   - Call `post_chat_message(session_id, node_id, chat_id, msg_id=<new uuid>, text=<your reply>)` once. `chat_id` MUST match the value in the channel block — re-use it for every reply in this chat.
+   - END TURN. The next shape-C wake delivers the user's next message (or the next grill wake if the user accepted/closed).
+3. **When the chat has reached an answer:** call `propose_chat_outcome(session_id, node_id, chat_id, outcome, summary, ops?)` to stage the proposal. The GUI renders a banner with an Accept button. END TURN.
+   - There is NO Reject button. If the user keeps typing instead of accepting, you'll receive more shape-C wakes — reply normally, and call `propose_chat_outcome` again later when the chat re-converges. Each call OVERWRITES the prior staged proposal (single-slot, no stacking).
+4. **On Accept:** server commits server-side, broadcasts `node_updated` + `chat_closed`, and resumes the session. You'll wake when you push the next `present_branches`. There is no wake event dedicated to "accept landed" — assume the next non-chat wake means the user has resumed grilling.
+5. **On Close (X button):** server discards the transcript + any pending proposal, unlocks the node, resumes the session. No ChatBlock is written. There is no wake event for close — if a stale chat_message somehow lands, the call will fail with `chat not open`; abandon the thread.
 
-`chat_id` is a UUID YOU generate per chat (e.g. `uuid.uuid4().hex`). Used for idempotency: if CC's transport retries the call, the server returns success without re-mutating. **Use the same chat_id on retry; never roll a new one for the same chat.**
+### Outcomes (same three as before)
 
-`chat_summary` is a 2–4 sentence condensed narrative of what was discussed and why this outcome. The full transcript stays in CC chat history; the server only stores this summary as a banner on the node.
+- **`refine`** — original question stands, option set sharpened. Pass `ops` with `adds` (new branches) and/or `removes` (branch ids to soft-delete). All-or-nothing on validation: unknown removes id -> err, nothing staged. Re-read snapshot + retry with the SAME chat_id.
+- **`redirect`** — original question is wrong. On Accept, server marks the node `redirected` and synthesizes a redirect branch. The next `present_branches` you push (after the user has resumed) should pass `parent_node_id=<this node>` and `parent_branch_id=<redirect id>`. The redirect id lives on the committed node — read it from `node.branches` (look for `rationale == "redirected via chat"`) or pull a fresh snapshot.
+- **`resolve`** — chat itself is the answer. On Accept, server synthesizes a chosen branch and sets `chosen_branch_ids = [synth_id]`. Future drilling chains off that branch.
 
-All-or-nothing for refine: any unknown id in `ops.removes` returns an error and NOTHING applies. Re-read the snapshot, fix the ids, retry with the SAME chat_id.
+### `chat_id` discipline
 
-Tool call shape:
+The `chat_id` arrives in every shape-C channel block. **Use it verbatim on every `post_chat_message` and `propose_chat_outcome` call for that chat.** Do NOT mint a new chat_id mid-thread. Re-using the chat_id is what makes `propose_chat_outcome` idempotent across overwrites (latest staging wins).
+
+`summary` (on `propose_chat_outcome`) is the 2-4 sentence narrative the user reads in the Accept banner. On commit it lands as the node's ChatBlock summary.
+
+### Tool call shape
 
 ```
-apply_chat_result(
+# user typed: "I want to use Paddle, not Stripe — EU VAT is a dealbreaker"
+post_chat_message(
   session_id="ab12cd34",
   node_id="n3",
-  chat_id="<uuid you generated when chat fired>",
-  chat_summary="Discussed Stripe vs Paddle. User concerned about EU VAT handling — Paddle wins on that. Removed 'roll your own' as out of scope.",
+  chat_id="abc...",                 # from the channel block
+  msg_id="m_<new uuid>",
+  text="Paddle handles EU VAT automatically; Stripe makes you wire it manually via Stripe Tax. If VAT compliance is a dealbreaker, Paddle is the safer pick. Want me to swap the recommendation, or refine the option list?",
+)
+# END TURN. Wait for next shape-C wake.
+
+# Later, user has confirmed they want Paddle and want roll-your-own dropped.
+propose_chat_outcome(
+  session_id="ab12cd34",
+  node_id="n3",
+  chat_id="abc...",                 # SAME id
   outcome="refine",
+  summary="User wants Paddle for EU VAT handling; roll-your-own is out of scope.",
   ops={
     "adds": [
-      {"label": "Paddle", "rationale": "Handles VAT/sales tax automatically", "is_recommended": true}
+      {"label": "Paddle", "rationale": "Handles VAT/sales tax automatically", "is_recommended": True}
     ],
     "removes": ["b_roll_own_id"]
-  }
+  },
 )
-→ {ok: true, node_id: "n3"}
+# END TURN. GUI shows Accept banner.
+# User clicks Accept → server commits, broadcasts node_updated + chat_closed,
+# resumes session. Next wake is whatever you push (or the user clicks).
 ```
 
-For `redirect` / `resolve`, omit `ops` (or pass `{}`).
+### `apply_chat_result` is an escape hatch only
 
-After `apply_chat_result` returns ok, the node is unlocked and the session is active. Push the next `present_branches` whenever the design tells you to (drill, sideways, or a redirect-driven new question) and end turn.
+The tool still exists but **MUST NOT** be called from the inline-chat flow. It bypasses the staged-proposal Accept gate. Reserved for crash recovery / explicit manual override only.
 
 ## Ending
 

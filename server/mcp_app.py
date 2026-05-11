@@ -410,6 +410,119 @@ async def apply_chat_result(
 
 
 @mcp.tool()
+async def post_chat_message(
+    session_id: str,
+    node_id: str,
+    chat_id: str,
+    msg_id: str,
+    text: str,
+) -> dict:
+    """Append a Claude assistant reply to the inline chat thread on a node.
+
+    Use this in response to a `chat_message` channel wake (user typed a
+    message in the GUI). Call ONCE per assistant reply, then END YOUR TURN.
+
+    `msg_id` is a UUID YOU generate for this message (e.g. uuid.uuid4().hex);
+    idempotent on retry — same msg_id is a no-op. Use the same id if the
+    transport retries.
+
+    The user keeps the chat open by typing more; you keep replying with
+    post_chat_message. When the chat has reached an answer, call
+    `propose_chat_outcome` to stage the outcome — the user clicks Accept
+    in the GUI to commit. Do NOT call `apply_chat_result` from the
+    inline-chat flow — `propose_chat_outcome` + the GUI Accept button
+    are the canonical path.
+    """
+    msg, seq, err = store.append_chat_message(
+        sid=session_id,
+        node_id=node_id,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        role="assistant",
+        text=text,
+    )
+    if err is not None or msg is None:
+        return {"ok": False, "err": err or "append failed"}
+    # broadcast only on fresh append (idempotent replay returns seq=None)
+    if seq is not None:
+        await store.broadcast(
+            session_id,
+            {
+                "type": "chat_message_added",
+                "session_id": session_id,
+                "payload": {
+                    "node_id": node_id,
+                    "chat_id": chat_id,
+                    "message": msg.model_dump(),
+                    "seq": seq,
+                },
+            },
+        )
+    return {"ok": True, "msg_id": msg.msg_id}
+
+
+@mcp.tool()
+async def propose_chat_outcome(
+    session_id: str,
+    node_id: str,
+    chat_id: str,
+    outcome: str,
+    summary: str,
+    ops: Optional[dict] = None,
+) -> dict:
+    """Stage a chat outcome proposal. User clicks Accept in the GUI to commit.
+
+    `outcome` ∈ {refine, redirect, resolve}. Same semantics as
+    `apply_chat_result`:
+      - refine:   ops {adds: [{label,rationale,is_recommended}], removes: [ids]}.
+                  Validated up front; bad ids -> err, nothing staged.
+      - redirect: original question wrong. Server synthesizes a redirect
+                  branch on Accept; you'll receive its id in node_updated.
+      - resolve:  chat is the answer; server synthesizes a chosen branch
+                  on Accept.
+
+    Staging is single-slot: a fresh propose_chat_outcome call OVERWRITES
+    the prior pending proposal (no stacking). User has no Reject button —
+    they either Accept or keep typing.
+
+    `summary` is the 2-4 sentence narrative the user will see in the
+    Accept banner (and which lands as the ChatBlock summary on commit).
+    Use the same `chat_id` you've been carrying through post_chat_message
+    calls.
+    """
+    if outcome not in ("refine", "redirect", "resolve"):
+        return {"ok": False, "err": f"bad outcome: {outcome}"}
+    parsed_ops: Optional[ChatOps] = None
+    if outcome == "refine":
+        try:
+            parsed_ops = ChatOps.model_validate(ops or {})
+        except Exception as e:
+            return {"ok": False, "err": f"bad ops: {e}"}
+    prop, err = store.set_pending_proposal(
+        sid=session_id,
+        node_id=node_id,
+        chat_id=chat_id,
+        outcome=outcome,
+        ops=parsed_ops,
+        summary=summary,
+    )
+    if err is not None or prop is None:
+        return {"ok": False, "err": err or "stage failed"}
+    await store.broadcast(
+        session_id,
+        {
+            "type": "chat_proposal_staged",
+            "session_id": session_id,
+            "payload": {
+                "node_id": node_id,
+                "proposal": prop.model_dump(),
+            },
+        },
+    )
+    return {"ok": True, "proposed_at": prop.proposed_at}
+
+
+@mcp.tool()
 async def end_session(session_id: str, summary: str = "") -> dict:
     """End the grill session. Final summary is broadcast to GUI."""
     s = store.get(session_id)

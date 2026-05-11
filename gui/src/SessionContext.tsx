@@ -92,6 +92,23 @@ export function SessionProvider({ sid, children }: Props) {
           d({ type: "node_committed", node_id: ev.payload.node_id, action: last?.action ?? null });
           break;
         }
+        case "chat_message_added":
+          d({
+            type: "chat_message_added",
+            node_id: ev.payload.node_id,
+            message: ev.payload.message,
+          });
+          break;
+        case "chat_proposal_staged":
+          d({
+            type: "chat_proposal_staged",
+            node_id: ev.payload.node_id,
+            proposal: ev.payload.proposal,
+          });
+          break;
+        case "chat_closed":
+          d({ type: "chat_closed", node_id: ev.payload.node_id });
+          break;
         // hook_event, session_list, session_deleted, hello, ping → ignored per-session
         default:
           break;

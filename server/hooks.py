@@ -81,6 +81,12 @@ async def actions_endpoint(request: Request) -> Response:
             {"ok": False, "err": "next requires branch_ids or note"}, status_code=400
         )
 
+    # inline-chat: chat-track actions short-circuit before the click-buffer
+    # path. They mutate chat state directly + broadcast bespoke SSE events;
+    # do NOT enqueue / flush / lock-check like grill actions.
+    if action.action in ("chat_user_msg", "chat_accept", "chat_close"):
+        return await _handle_chat_action(action)
+
     if store.is_flushed(action.node_id):
         return JSONResponse(
             {"ok": False, "err": "node locked"}, status_code=409
@@ -239,6 +245,127 @@ async def actions_endpoint(request: Request) -> Response:
         await store.broadcast_session_list()
 
     return JSONResponse({"ok": True, "queued": True})
+
+
+async def _handle_chat_action(action: GuiAction) -> Response:
+    """Inline-chat actions: chat_user_msg / chat_accept / chat_close.
+
+    Each mutates chat-track state directly + emits its own SSE event(s);
+    none of them feed the click buffer or terminal flush path used by
+    next/chat verdicts.
+    """
+    if action.action == "chat_user_msg":
+        if not action.chat_id or not action.msg_id or not (action.text or "").strip():
+            return JSONResponse(
+                {"ok": False, "err": "chat_user_msg requires chat_id, msg_id, text"},
+                status_code=400,
+            )
+        msg, seq, err = store.append_chat_message(
+            sid=action.session_id,
+            node_id=action.node_id,
+            chat_id=action.chat_id,
+            msg_id=action.msg_id,
+            role="user",
+            text=action.text or "",
+        )
+        if err is not None or msg is None:
+            return JSONResponse({"ok": False, "err": err or "append failed"}, status_code=400)
+        # idempotent replay: seq=None means already appended, do NOT re-broadcast
+        if seq is not None:
+            await store.broadcast(
+                action.session_id,
+                {
+                    "type": "chat_message_added",
+                    "session_id": action.session_id,
+                    "payload": {
+                        "node_id": action.node_id,
+                        "chat_id": action.chat_id,
+                        "message": msg.model_dump(),
+                        "seq": seq,
+                    },
+                },
+            )
+        return JSONResponse({"ok": True})
+
+    if action.action == "chat_accept":
+        if not action.chat_id:
+            return JSONResponse(
+                {"ok": False, "err": "chat_accept requires chat_id"},
+                status_code=400,
+            )
+        node, redirect_bid, err = store.accept_proposal(
+            sid=action.session_id, node_id=action.node_id
+        )
+        if err is not None or node is None:
+            return JSONResponse({"ok": False, "err": err or "accept failed"}, status_code=400)
+        # broadcast canonical post-mutation node (carries new chats[]
+        # entry, removed/added branches, redirected flag, etc.)
+        await store.broadcast(
+            action.session_id,
+            {
+                "type": "node_updated",
+                "session_id": action.session_id,
+                "payload": node.model_dump(),
+            },
+        )
+        # session is active again (apply_chat_result flipped status)
+        await store.broadcast(
+            action.session_id,
+            {
+                "type": "session_resumed",
+                "session_id": action.session_id,
+                "payload": {},
+            },
+        )
+        await store.broadcast(
+            action.session_id,
+            {
+                "type": "chat_closed",
+                "session_id": action.session_id,
+                "payload": {"node_id": action.node_id, "chat_id": action.chat_id},
+            },
+        )
+        await store.broadcast_session_list()
+        resp: dict = {"ok": True}
+        if redirect_bid:
+            resp["redirect_branch_id"] = redirect_bid
+        return JSONResponse(resp)
+
+    # action == "chat_close"
+    if not action.chat_id:
+        return JSONResponse(
+            {"ok": False, "err": "chat_close requires chat_id"},
+            status_code=400,
+        )
+    node, err = store.close_chat(sid=action.session_id, node_id=action.node_id)
+    if err is not None or node is None:
+        return JSONResponse({"ok": False, "err": err or "close failed"}, status_code=400)
+    await store.broadcast(
+        action.session_id,
+        {
+            "type": "node_updated",
+            "session_id": action.session_id,
+            "payload": node.model_dump(),
+        },
+    )
+    await store.broadcast(
+        action.session_id,
+        {
+            "type": "session_resumed",
+            "session_id": action.session_id,
+            "payload": {},
+        },
+    )
+    await store.broadcast(
+        action.session_id,
+        {
+            "type": "chat_closed",
+            "session_id": action.session_id,
+            "payload": {"node_id": action.node_id, "chat_id": action.chat_id},
+        },
+    )
+    await store.broadcast_session_list()
+    return JSONResponse({"ok": True})
 
 
 async def sessions_endpoint(request: Request) -> Response:

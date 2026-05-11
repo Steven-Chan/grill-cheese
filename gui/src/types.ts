@@ -19,6 +19,23 @@ export interface ChatBlock {
   branch_id?: string | null;
 }
 
+// inline-chat: live transcript msg, role = user | assistant.
+export interface ChatMessage {
+  msg_id: string;
+  role: "user" | "assistant";
+  text: string;
+  ts: number;
+}
+
+// inline-chat: latest staged proposal from Claude.
+export interface PendingProposal {
+  chat_id: string;
+  outcome: ChatOutcome;
+  ops?: { adds?: Branch[]; removes?: string[] } | null;
+  summary: string;
+  proposed_at: number;
+}
+
 export interface DecisionNode {
   id: string;
   parent_node_id: string | null;
@@ -57,6 +74,12 @@ export interface DecisionNode {
   chats?: ChatBlock[];
   // true when chat outcome == "redirect" — node abandoned, greyed out
   redirected?: boolean;
+  // inline-chat: live transcript (pruned on Accept/Close)
+  chat_messages?: ChatMessage[];
+  // inline-chat: latest staged proposal from Claude; one-slot, overwritten
+  pending_proposal?: PendingProposal | null;
+  // inline-chat: true between user clicking Chat and Accept/Close
+  chat_open?: boolean;
   // server-internal action buffer fields (persistence). GUI ignores.
   pending_actions?: unknown[];
   committed_actions?: unknown[];
@@ -114,4 +137,7 @@ export type SseEvent =
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
   | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }>; generate_docs?: boolean; docs_reason?: string | null } }
+  | { type: "chat_message_added"; session_id: string; payload: { node_id: string; chat_id: string; message: ChatMessage; seq?: number } }
+  | { type: "chat_proposal_staged"; session_id: string; payload: { node_id: string; proposal: PendingProposal } }
+  | { type: "chat_closed"; session_id: string; payload: { node_id: string; chat_id: string } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };

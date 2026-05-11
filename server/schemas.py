@@ -42,6 +42,25 @@ class ChatOps(BaseModel):
     removes: list[str] = Field(default_factory=list)
 
 
+# inline-chat: live transcript message (user or Claude). Cleared on
+# Accept/Close — see Node.chat_messages.
+class ChatMessage(BaseModel):
+    msg_id: str
+    role: Literal["user", "assistant"]
+    text: str
+    ts: float
+
+
+# inline-chat: latest staged proposal from Claude. Overwritten when Claude
+# emits a fresh propose_chat_outcome (no stacking). Cleared on Accept/Close.
+class PendingProposal(BaseModel):
+    chat_id: str
+    outcome: ChatOutcome
+    ops: Optional[ChatOps] = None  # refine only
+    summary: str
+    proposed_at: float
+
+
 class Node(BaseModel):
     # extra=ignore so old session JSONs missing dropped fields (user_note,
     # chosen_branch_id) load without crashing during rehydrate.
@@ -80,6 +99,17 @@ class Node(BaseModel):
     chats: list[ChatBlock] = Field(default_factory=list)
     # set when chat outcome == "redirect" — node abandoned, child carries new question
     redirected: bool = False
+    # inline-chat: live transcript. Persisted between Open and Accept/Close
+    # so refresh/restart preserves the thread. Pruned on Accept (apply lands
+    # as ChatBlock) or Close (discard, nothing applied).
+    chat_messages: list[ChatMessage] = Field(default_factory=list)
+    # inline-chat: latest staged proposal from Claude. Single-slot — fresh
+    # propose_chat_outcome overwrites. None when chat is open with no
+    # proposal yet, or after Accept/Close.
+    pending_proposal: Optional[PendingProposal] = None
+    # inline-chat: true between user clicking Chat and Accept/Close.
+    # Survives reload so the panel re-renders open.
+    chat_open: bool = False
     # persistence: action buffer fields (moved off Store dicts so one
     # session JSON dump captures full state)
     pending_actions: list["AskBranchesResult"] = Field(default_factory=list)
@@ -177,9 +207,17 @@ class GuiAction(BaseModel):
     # single-id scope for action=chat (chat-on-row). Unused by next.
     branch_id: Optional[str] = None
     note: Optional[str] = None
+    # inline-chat: chat thread id, set on action ∈ {chat_user_msg,
+    # chat_accept, chat_close}. Generated GUI-side on first user msg.
+    chat_id: Optional[str] = None
+    # inline-chat: per-message uuid for idempotent append. action=chat_user_msg.
+    msg_id: Optional[str] = None
+    # inline-chat: user-typed text for action=chat_user_msg.
+    text: Optional[str] = None
     action: Literal[
         "next", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
+        "chat_user_msg", "chat_accept", "chat_close",
     ]
 
 

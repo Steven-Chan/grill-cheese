@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { postAction, type ActionKind, type ActionRejection } from "../api";
 import { useSession } from "../SessionContext";
-import type { DecisionNode } from "../types";
+import type { ChatMessage, DecisionNode, PendingProposal } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
 import { FireAnimation } from "./FireAnimation";
+
+// uuid for chat_id / msg_id. crypto.randomUUID() is available in all
+// browsers we target (Chrome/Edge/FF/Safari from 2022 onward) and in
+// secure contexts only — localhost qualifies.
+function uuid(): string {
+  return crypto.randomUUID().replace(/-/g, "");
+}
 
 interface Props {
   onToast: (msg: string) => void;
@@ -255,25 +262,219 @@ function DecisionCard({
             className="gc-btn gc-btn-secondary"
             disabled={locked || !!busy}
             onClick={() => send("chat", { skipPicks: true })}
-            title="Pause and chat about this question in Claude Code"
+            title="Open inline chat with Claude about this question"
           >
             Chat
           </button>
         </div>
       </div>
 
-      {paused && (
-        <div className="gc-bigcard-paused-banner">
-          <strong>paused</strong> — chatting in Claude Code about this question.
-        </div>
+      {node.chat_open && (
+        <ChatPanel node={node} sid={sid} onToast={onToast} />
       )}
-      {!!node.committed && !paused && (
+      {!!node.committed && !paused && !node.chat_open && (
         <div className="gc-bigcard-locked-banner gc-dim">
           <FireAnimation size={16} style={{ height: 24, paddingBottom: 8 }} />
           <span>settled — waiting for the next question…</span>
         </div>
       )}
     </article>
+  );
+}
+
+// ---------- inline chat panel ----------
+
+function ChatPanel({
+  node,
+  sid,
+  onToast,
+}: {
+  node: DecisionNode;
+  sid: string;
+  onToast: (msg: string) => void;
+}) {
+  const messages = node.chat_messages ?? [];
+  const proposal = node.pending_proposal ?? null;
+
+  // chat_id: stable for this chat thread. Persist via the staged proposal
+  // if one already exists (so Accept maps to the same chat_id Claude staged).
+  // Otherwise generate once and keep in a ref for the panel lifetime.
+  const chatIdRef = useRef<string | null>(null);
+  if (chatIdRef.current === null) {
+    chatIdRef.current = proposal?.chat_id ?? uuid();
+  }
+  // re-sync chat_id when a proposal lands carrying a different one (e.g.
+  // a chat was opened pre-restart and Claude staged with a different id).
+  useEffect(() => {
+    if (proposal && proposal.chat_id && proposal.chat_id !== chatIdRef.current) {
+      chatIdRef.current = proposal.chat_id;
+    }
+  }, [proposal]);
+
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState<"send" | "accept" | "close" | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // autoscroll on new message
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, proposal?.proposed_at]);
+
+  const send = async (text: string) => {
+    if (busy) return;
+    const t = text.trim();
+    if (!t) return;
+    setBusy("send");
+    try {
+      await postAction(sid, node.id, "chat_user_msg", {
+        chat_id: chatIdRef.current ?? uuid(),
+        msg_id: uuid(),
+        text: t,
+      });
+      setDraft("");
+    } catch (e) {
+      const rej = e as ActionRejection;
+      onToast(`Send failed: ${rej?.err ?? rej?.status ?? "network"}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const accept = async () => {
+    if (busy || !proposal) return;
+    setBusy("accept");
+    try {
+      await postAction(sid, node.id, "chat_accept", {
+        chat_id: chatIdRef.current ?? proposal.chat_id,
+      });
+    } catch (e) {
+      const rej = e as ActionRejection;
+      onToast(`Accept failed: ${rej?.err ?? rej?.status ?? "network"}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const close = async () => {
+    if (busy) return;
+    setBusy("close");
+    try {
+      await postAction(sid, node.id, "chat_close", {
+        chat_id: chatIdRef.current ?? uuid(),
+      });
+    } catch (e) {
+      const rej = e as ActionRejection;
+      onToast(`Close failed: ${rej?.err ?? rej?.status ?? "network"}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="gc-chat-panel">
+      <header className="gc-chat-head">
+        <span className="gc-chat-title">chat</span>
+        <button
+          type="button"
+          className="gc-btn gc-btn-toolbar gc-chat-close"
+          aria-label="close chat"
+          disabled={!!busy}
+          onClick={close}
+        >
+          ×
+        </button>
+      </header>
+      <div ref={listRef} className="gc-chat-list">
+        {messages.length === 0 && (
+          <p className="gc-dim gc-chat-empty">Type a message to start the chat.</p>
+        )}
+        {messages.map((m: ChatMessage) => (
+          <div key={m.msg_id} className={`gc-chat-msg gc-chat-msg-${m.role}`}>
+            <div className="gc-chat-bubble">{m.text}</div>
+          </div>
+        ))}
+      </div>
+      {proposal && (
+        <ProposalBanner proposal={proposal} node={node} onAccept={accept} busy={busy === "accept"} />
+      )}
+      <div className="gc-chat-input">
+        <textarea
+          rows={2}
+          placeholder="type a message…"
+          value={draft}
+          disabled={!!busy}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              void send(draft);
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="gc-btn gc-btn-primary"
+          disabled={!!busy || !draft.trim()}
+          onClick={() => void send(draft)}
+        >
+          {busy === "send" ? "sending…" : "Send"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ProposalBanner({
+  proposal,
+  node,
+  onAccept,
+  busy,
+}: {
+  proposal: PendingProposal;
+  node: DecisionNode;
+  onAccept: () => void;
+  busy: boolean;
+}) {
+  const ops = proposal.ops ?? null;
+  const adds = ops?.adds ?? [];
+  const removes = ops?.removes ?? [];
+  const removeLabels = useMemo(() => {
+    const byId = new Map(node.branches.map((b) => [b.id, b.label] as const));
+    return removes.map((id) => byId.get(id) ?? id);
+  }, [node.branches, removes]);
+  return (
+    <div className="gc-chat-proposal">
+      <header className="gc-chat-proposal-head">
+        <span className="gc-chip gc-chip-proposal">proposed outcome: {proposal.outcome}</span>
+      </header>
+      <p className="gc-chat-proposal-summary">{proposal.summary}</p>
+      {proposal.outcome === "refine" && (adds.length > 0 || removeLabels.length > 0) && (
+        <ul className="gc-chat-proposal-ops">
+          {adds.map((b, i) => (
+            <li key={`add-${i}`} className="gc-chat-op-add">
+              + {b.label}
+              {b.rationale ? <span className="gc-dim"> — {b.rationale}</span> : null}
+            </li>
+          ))}
+          {removeLabels.map((lbl, i) => (
+            <li key={`rm-${i}`} className="gc-chat-op-remove">
+              − {lbl}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="gc-chat-proposal-actions">
+        <button
+          type="button"
+          className="gc-btn gc-btn-primary"
+          disabled={busy}
+          onClick={onAccept}
+        >
+          {busy ? "accepting…" : "Accept"}
+        </button>
+      </div>
+    </div>
   );
 }
 

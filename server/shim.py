@@ -236,6 +236,64 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
             pass
 
 
+async def _emit_chat_message_channel(
+    session: ServerSession, event_data: dict[str, Any]
+) -> None:
+    """Map an SSE chat_message_added envelope to a notifications/claude/channel.
+
+    Only emit for role=='user' messages — assistant messages originate from
+    Claude itself (post_chat_message tool call) and don't need to be echoed
+    back to it. Channel payload shape (type=chat_message):
+        {type, session_id, node_id, chat_id, msg_id, text, seq}
+    """
+    payload = event_data.get("payload") or {}
+    msg = payload.get("message") or {}
+    if msg.get("role") != "user":
+        return
+    session_id = event_data.get("session_id") or ""
+    node_id = payload.get("node_id") or ""
+    chat_id = payload.get("chat_id") or ""
+    seq = payload.get("seq")
+    body: dict[str, Any] = {
+        "type": "chat_message",
+        "session_id": session_id,
+        "node_id": node_id,
+        "chat_id": chat_id,
+        "msg_id": msg.get("msg_id") or "",
+        "text": msg.get("text") or "",
+        "seq": seq,
+    }
+    meta = {
+        "session_id": str(session_id),
+        "node_id": str(node_id),
+        "chat_id": str(chat_id),
+        "kind": "chat_message",
+    }
+    try:
+        jr = JSONRPCNotification(
+            jsonrpc="2.0",
+            method="notifications/claude/channel",
+            params={"content": json.dumps(body), "meta": meta},
+        )
+        await session.send_message(SessionMessage(message=JSONRPCMessage(jr)))
+        _log(f"emitted chat_message channel session={session_id} node={node_id} seq={seq}")
+    except Exception as e:
+        _log(f"chat_message channel emit err: {type(e).__name__}: {e}")
+        return
+    # Telemetry: same /internal/telemetry/notify endpoint as node_committed
+    # emits use. Drives prompt-cache TTL diagnostics — chat-intensive
+    # sessions need the same notify trail.
+    if isinstance(seq, int) and session_id and node_id:
+        try:
+            client = await _http()
+            await client.post(
+                "/internal/telemetry/notify",
+                json={"session_id": session_id, "node_id": node_id, "seq": seq},
+            )
+        except Exception:
+            pass
+
+
 async def _emit_wrap_channel(session: ServerSession, event_data: dict[str, Any]) -> None:
     """Map an SSE session_wrap envelope to a notifications/claude/channel.
 
@@ -263,6 +321,8 @@ async def _dispatch_emit(session: ServerSession, event_name: str, data: dict[str
         await _emit_channel(session, data)
     elif event_name == "session_wrap":
         await _emit_wrap_channel(session, data)
+    elif event_name == "chat_message_added":
+        await _emit_chat_message_channel(session, data)
 
 
 async def _sse_subscriber() -> None:
@@ -274,7 +334,7 @@ async def _sse_subscriber() -> None:
     """
     backoff = 1.0
     sse_path = f"/events?owner={OWNER_ID}"
-    bridged = {"node_committed", "session_wrap"}
+    bridged = {"node_committed", "session_wrap", "chat_message_added"}
     while True:
         try:
             async with httpx.AsyncClient(base_url=BASE_URL, timeout=None) as c:

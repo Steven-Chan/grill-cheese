@@ -33,6 +33,9 @@ export function openSse(sessionId: string | null, onEvent: (ev: SseEvent) => voi
     "node_added",
     "node_updated",
     "node_committed",
+    "chat_message_added",
+    "chat_proposal_staged",
+    "chat_closed",
     "hook_event",
   ];
   for (const t of types) {

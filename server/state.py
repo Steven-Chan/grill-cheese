@@ -17,11 +17,13 @@ from .schemas import (
     AskBranchesResult,
     Branch,
     ChatBlock,
+    ChatMessage,
     ChatOps,
     CmuxInfo,
     GuiAction,
     HookEvent,
     Node,
+    PendingProposal,
     Session,
 )
 
@@ -659,6 +661,13 @@ class Store:
                 )
                 if scoped is None:
                     return None
+            # inline-chat: flag node as having an open thread. Fresh open
+            # wipes any leftover messages / pending proposal from a prior
+            # chat session on the same node (after Close + re-open, or
+            # rehydration of a stale state).
+            node.chat_open = True
+            node.chat_messages = []
+            node.pending_proposal = None
             return AskBranchesResult(
                 node_id=action.node_id,
                 chat_branch_id=scoped.id if scoped else None,
@@ -666,6 +675,169 @@ class Store:
                 action="chat",
             )
         return None
+
+    # ---- inline-chat: transcript + proposal + accept/close ----
+    def append_chat_message(
+        self,
+        sid: str,
+        node_id: str,
+        chat_id: str,
+        msg_id: str,
+        role: str,
+        text: str,
+    ) -> tuple[Optional[ChatMessage], Optional[int], Optional[str]]:
+        """Append a chat message to the live transcript. Returns
+        (message, seq, err). seq is the per-session monotonic seq
+        consumed for this message (shared with node_committed counter so
+        the skill's last_seen tracking sees a single contiguous stream).
+
+        Idempotent on msg_id: replaying with the same id returns the
+        existing message + no new seq (seq=None). Caller MUST NOT re-emit
+        the channel notification for replays.
+        """
+        if role not in ("user", "assistant"):
+            return None, None, f"bad role: {role}"
+        s = self.sessions.get(sid)
+        if not s:
+            return None, None, "no such session"
+        node = s.nodes.get(node_id)
+        if not node:
+            return None, None, "no such node"
+        if not node.chat_open:
+            return None, None, "chat not open"
+        # idempotent: same msg_id already appended -> return cached, no seq
+        for existing in node.chat_messages:
+            if existing.msg_id == msg_id:
+                return existing, None, None
+        msg = ChatMessage(
+            msg_id=msg_id, role=role, text=text, ts=time.time(),  # type: ignore[arg-type]
+        )
+        node.chat_messages.append(msg)
+        seq = s.next_seq
+        s.next_seq += 1
+        self._persist(s)
+        return msg, seq, None
+
+    def set_pending_proposal(
+        self,
+        sid: str,
+        node_id: str,
+        chat_id: str,
+        outcome: str,
+        ops: Optional[ChatOps],
+        summary: str,
+    ) -> tuple[Optional[PendingProposal], Optional[str]]:
+        """Stage (or overwrite) the chat outcome proposal on the node."""
+        if outcome not in ("refine", "redirect", "resolve"):
+            return None, f"bad outcome: {outcome}"
+        s = self.sessions.get(sid)
+        if not s:
+            return None, "no such session"
+        node = s.nodes.get(node_id)
+        if not node:
+            return None, "no such node"
+        if not node.chat_open:
+            return None, "chat not open"
+        if outcome == "refine":
+            # validate ops shape; do NOT mutate node.branches yet (apply
+            # happens on Accept). Just check branch ids resolve.
+            ops_obj = ops or ChatOps()
+            existing_ids = {b.id for b in node.branches}
+            for rid in ops_obj.removes:
+                if rid not in existing_ids:
+                    return None, f"unknown branch id in removes: {rid}"
+            staged_ops: Optional[ChatOps] = ops_obj
+        else:
+            staged_ops = None
+        prop = PendingProposal(
+            chat_id=chat_id,
+            outcome=outcome,  # type: ignore[arg-type]
+            ops=staged_ops,
+            summary=summary,
+            proposed_at=time.time(),
+        )
+        node.pending_proposal = prop
+        self._persist(s)
+        return prop, None
+
+    def accept_proposal(
+        self, sid: str, node_id: str
+    ) -> tuple[Optional[Node], Optional[str], Optional[str]]:
+        """Commit the staged proposal: applies via apply_chat_result, then
+        clears live transcript / pending_proposal / chat_open. Returns
+        (node, redirect_branch_id, err).
+        """
+        s = self.sessions.get(sid)
+        if not s:
+            return None, None, "no such session"
+        node = s.nodes.get(node_id)
+        if not node:
+            return None, None, "no such node"
+        prop = node.pending_proposal
+        if prop is None:
+            return None, None, "no proposal staged"
+        # Clear chat-track fields BEFORE the apply runs so its internal
+        # _persist captures the final clean state in one write. A crash
+        # between two persists previously left an orphaned open-chat panel
+        # on a resumed session.
+        node.chat_messages = []
+        node.pending_proposal = None
+        node.chat_open = False
+        # reuse the canonical apply path — same mutations as the
+        # apply_chat_result MCP tool. It also unlocks (refine/resolve)
+        # and flips session active. Its _persist now writes the
+        # fully-clean state in one shot.
+        node_after, redirect_bid, err = self.apply_chat_result(
+            sid=sid,
+            node_id=node_id,
+            chat_id=prop.chat_id,
+            chat_summary=prop.summary,
+            outcome=prop.outcome,
+            ops=prop.ops,
+        )
+        if err is not None or node_after is None:
+            return None, None, err or "apply failed"
+        return node_after, redirect_bid, None
+
+    def close_chat(
+        self, sid: str, node_id: str
+    ) -> tuple[Optional[Node], Optional[str]]:
+        """Discard chat: drop transcript + proposal, unlock node, resume
+        session. No ChatBlock written. Single _persist at end so a crash
+        cannot leave unlock_node's intermediate state on disk.
+        """
+        s = self.sessions.get(sid)
+        if not s:
+            return None, "no such session"
+        node = s.nodes.get(node_id)
+        if not node:
+            return None, "no such node"
+        # chat fields
+        node.chat_messages = []
+        node.pending_proposal = None
+        node.chat_open = False
+        # node-unlock logic (inlined from unlock_node — we want a SINGLE
+        # _persist at the bottom that captures both the unlock + session
+        # resume atomically). unlock_node persists internally, which would
+        # otherwise leave a window where node is unlocked but session is
+        # still paused.
+        timer = self._timers.pop(node_id, None)
+        if timer is not None:
+            timer.cancel()
+        node.pending_actions = []
+        node.committed_actions = []
+        node.is_flushed = False
+        old_ev = self._events.pop(node_id, None)
+        if old_ev is not None and not old_ev.is_set():
+            old_ev.set()
+        # session resume if paused
+        if s.status == "paused":
+            s.status = "active"
+            s.paused_node_id = None
+            s.paused_branch_id = None
+            self._bump_status_event(sid)
+        self._persist(s)
+        return node, None
 
     # ---- apply_chat_result (chat outcome -> node mutation) ----
     def apply_chat_result(
