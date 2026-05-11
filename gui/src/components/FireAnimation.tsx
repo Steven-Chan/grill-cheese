@@ -5,6 +5,8 @@ interface Props {
   fps?: number;
   // "fire" = animated flame, "cheese" = static cheese wedge (done state)
   state?: "fire" | "cheese";
+  // override fire -> dot shrink duration (ms). default 750.
+  fireShrinkMs?: number;
   style?: React.CSSProperties; // merged onto canvas (overrides width/height)
 }
 
@@ -13,6 +15,7 @@ interface Props {
 // rectangular darker front face (D) below, scattered holes (h), full
 // black outline (B).
 const CHEESE: readonly string[] = [
+  "................",
   "................",
   "................",
   "................",
@@ -28,14 +31,21 @@ const CHEESE: readonly string[] = [
   "..BDDDDDDDDDDDDB",
   "..BDhDDDDDDDDhDB",
   "..BBBBBBBBBBBBBB",
-  "................",
 ];
 
 // 16x16 pixel-art flame / cheese; CSS upscales w/ image-rendering: pixelated
-export function FireAnimation({ size = 80, fps = 7, state = "fire", style }: Props) {
+export function FireAnimation({
+  size = 80,
+  fps = 7,
+  state = "fire",
+  fireShrinkMs = 750,
+  style,
+}: Props) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const fireShrinkRef = useRef(fireShrinkMs);
+  fireShrinkRef.current = fireShrinkMs;
 
   useEffect(() => {
     const canvas = ref.current;
@@ -57,9 +67,7 @@ export function FireAnimation({ size = 80, fps = 7, state = "fire", style }: Pro
     const IGNITE_MS = 750; // fire base-only -> full bloom
     const MORPH_MS = 750; // dot -> cheese reveal
     // mode handoff: outgoing fades + center dot grows, dot holds, then incoming
-    const FIRE_SHRINK_MS = 750; // fire -> dot duration
     const DOT_HOLD_MS = 400;
-    const HANDOFF_END = FIRE_SHRINK_MS + DOT_HOLD_MS;
 
     // offscreen canvas for fire so we can drawImage it with arbitrary scale
     // anchored at the dot center (mirror of how cheese scales from the dot).
@@ -218,6 +226,9 @@ export function FireAnimation({ size = 80, fps = 7, state = "fire", style }: Pro
         ctx.clearRect(0, 0, 16, 16);
         const elapsed = now - modeStart;
         const transitioning = prevMode !== renderedMode;
+        // per-frame so caller can tune via prop without remounting the effect
+        const FIRE_SHRINK_MS = fireShrinkRef.current;
+        const HANDOFF_END = FIRE_SHRINK_MS + DOT_HOLD_MS;
 
         // fire -> cheese: 3-phase via dot (fire shrinks into dot, then cheese).
         // cheese -> fire: no dot; cheese fades out while fire ignites.

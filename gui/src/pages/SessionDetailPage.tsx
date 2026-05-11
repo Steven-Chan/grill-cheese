@@ -26,6 +26,14 @@ function DetailShell() {
   // null = follow live pending. set = pinned to a specific past node in BigCard slot.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
+  // chip (icon-only, always visible): fire iff Claude is being waited on,
+  // otherwise cheese. Flipping back to fire on the next waiting edge is fine.
+  const waiting =
+    state.loaded &&
+    state.status === "active" &&
+    (state.pendingNodeId === null || state.wrapping);
+  const chipMode: "fire" | "cheese" = waiting ? "fire" : "cheese";
+
   // clear the pin if the session ends (EndedHistoryView takes over) or the node vanishes
   useEffect(() => {
     if (!selectedNodeId) return;
@@ -121,22 +129,6 @@ function DetailShell() {
         <div className="gc-detail-head-chips">
           {state.project && <span className="gc-chip gc-chip-project">{state.project}</span>}
           <span className={`gc-chip gc-status-${state.status}`}>{state.status}</span>
-          {/* flame ON when Claude is expected to push next step:
-             - no pending node (after next / chat-accept / continue_grill / pre-first-push)
-             - or wrapping (session_wrap fired, awaiting present_summary) */}
-          {state.loaded &&
-            (() => {
-              const ended = state.status === "ended";
-              const waiting =
-                state.status === "active" && (state.pendingNodeId === null || state.wrapping);
-              if (!ended && !waiting) return null;
-              return (
-                <span className="gc-head-flame gc-dim">
-                  <FireAnimation size={16} state={ended ? "cheese" : "fire"} />
-                  <span>{ended ? "done" : "waiting…"}</span>
-                </span>
-              );
-            })()}
         </div>
         <BriefBanner brief={state.brief} />
       </header>
@@ -163,6 +155,9 @@ function DetailShell() {
           </button>
         </div>
       )}
+      <div className="gc-detail-fab" aria-hidden="true">
+        <FireAnimation size={48} state={chipMode} fireShrinkMs={200} />
+      </div>
     </div>
   );
 }
