@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
@@ -60,8 +60,6 @@ function DetailShell() {
           </Link>
           <h1 className="gc-detail-title">{state.title ?? state.sid}</h1>
           <div className="gc-detail-actions">
-            {state.project && <span className="gc-chip gc-chip-project">{state.project}</span>}
-            <span className={`gc-chip gc-status-${state.status}`}>{state.status}</span>
             {state.status !== "ended" && state.nodeOrder.length > 0 && (
               <button
                 type="button"
@@ -73,21 +71,17 @@ function DetailShell() {
                 {sidebarOpen ? "◧" : "◨"} history ({Math.max(0, state.nodeOrder.length - (state.pendingNodeId ? 1 : 0))})
               </button>
             )}
-            {showWrapUp && (
-              <button
-                type="button"
-                className="gc-btn gc-btn-toolbar"
-                onClick={onWrapUp}
-                disabled={wrappingUp}
-                title="Wrap up the session — Claude will draft a summary"
-              >
-                {wrappingUp ? "wrapping…" : "Wrap up"}
-              </button>
-            )}
-            <a className="gc-export-link" href={exportMarkdownUrl(state.sid)} target="_blank" rel="noreferrer">
-              export .md
-            </a>
+            <HeaderMenu
+              showWrapUp={showWrapUp}
+              wrappingUp={wrappingUp}
+              onWrapUp={onWrapUp}
+              exportUrl={exportMarkdownUrl(state.sid)}
+            />
           </div>
+        </div>
+        <div className="gc-detail-head-chips">
+          {state.project && <span className="gc-chip gc-chip-project">{state.project}</span>}
+          <span className={`gc-chip gc-status-${state.status}`}>{state.status}</span>
         </div>
         <BriefBanner brief={state.brief} />
       </header>
@@ -106,6 +100,82 @@ function DetailShell() {
           <button className="gc-toast-x" aria-label="dismiss" onClick={() => setToast(null)}>
             ×
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HeaderMenu({
+  showWrapUp,
+  wrappingUp,
+  onWrapUp,
+  exportUrl,
+}: {
+  showWrapUp: boolean;
+  wrappingUp: boolean;
+  onWrapUp: () => void;
+  exportUrl: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocMouseDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocMouseDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div className="gc-menu" ref={ref}>
+      <button
+        type="button"
+        className="gc-btn gc-btn-toolbar"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls="gc-header-menu-pop"
+        title="More actions"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div id="gc-header-menu-pop" className="gc-menu-pop" role="menu">
+          {showWrapUp && (
+            <button
+              type="button"
+              role="menuitem"
+              className="gc-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onWrapUp();
+              }}
+              disabled={wrappingUp}
+              title="Wrap up the session — Claude will draft a summary"
+            >
+              {wrappingUp ? "wrapping…" : "Wrap up"}
+            </button>
+          )}
+          <a
+            role="menuitem"
+            className="gc-menu-item"
+            href={exportUrl}
+            target="_blank"
+            rel="noreferrer"
+            onClick={() => setOpen(false)}
+          >
+            export .md
+          </a>
         </div>
       )}
     </div>
