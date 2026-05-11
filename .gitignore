@@ -19,6 +19,7 @@ gui/dist/
 
 # claude
 .claude/local
+.claude/settings.local.json
 sessions/
 *.session.json
 
