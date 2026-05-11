@@ -44,8 +44,22 @@ async def hooks_endpoint(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
+async def wrap_endpoint(request: Request) -> Response:
+    """POST /api/sessions/{sid}/wrap — toolbar Wrap-up signal.
+
+    Session-level: no node bound. Marks the session as awaiting verdict-card
+    composition + broadcasts session_wrap so the skill wakes and calls
+    present_summary. Idempotent on double-click (see Store.wrap_session).
+    """
+    sid = request.path_params.get("sid", "")
+    s = await store.wrap_session(sid)
+    if s is None:
+        return JSONResponse({"ok": False, "err": "not found or ended"}, status_code=404)
+    return JSONResponse({"ok": True})
+
+
 async def actions_endpoint(request: Request) -> Response:
-    """POST from GUI: next / stop / chat / summary verdicts.
+    """POST from GUI: next / chat / summary verdicts.
 
     Click flow: mutate node state immediately + broadcast node_updated, append
     record to per-node buffer, reset 750ms idle timer. Terminal-class clicks
@@ -161,17 +175,44 @@ async def actions_endpoint(request: Request) -> Response:
     if action.action in TERMINAL_ACTIONS:
         store.flush_now(action.session_id, action.node_id)
 
-    # Read the committed record's action (apply_action may remap stop→stop_here
-    # when the node is a summary). Auto-end keys off the COMMITTED action,
-    # not the raw GuiAction — otherwise the remap silently bypasses auto-end.
+    # Auto-end keys off the committed action.
     committed = store.get_actions(action.node_id)
     final_action = committed[-1].action if committed else None
+
+    # continue_grill on a wrap summary node un-wraps the session — the user
+    # bailed out of the verdict surface; pre-wrap pending node (if any) is
+    # eligible to receive picks again.
+    if final_action == "continue_grill":
+        s_resume = store.get(action.session_id)
+        if s_resume and s_resume.wrap_summary_node_id is not None:
+            s_resume.wrap_summary_node_id = None
+            store._persist(s_resume)
 
     # Summary-node verdicts auto-end the session server-side. Skill must NOT
     # call end_session for stop_here / create_plan / implement_now.
     if final_action in SUMMARY_END_ACTIONS:
         s2 = store.get(action.session_id)
         if s2:
+            # Verdict-with-pending: discard any non-summary node that never
+            # got an answer (un-flushed, non-implicit, non-redirected). Clean
+            # tree, no audit trail of the abandoned question.
+            doomed = [
+                nid for nid, n in s2.nodes.items()
+                if nid != action.node_id
+                and n.kind != "summary"
+                and not n.is_flushed
+                and not n.implicit
+                and not n.redirected
+            ]
+            for nid in doomed:
+                n = s2.nodes.get(nid)
+                if n and n.parent_node_id and n.parent_branch_id:
+                    parent = s2.nodes.get(n.parent_node_id)
+                    if parent:
+                        for b in parent.branches:
+                            if b.id == n.parent_branch_id and b.child_node_id == nid:
+                                b.child_node_id = None
+                s2.nodes.pop(nid, None)
             s2.status = "ended"
         await store.broadcast(
             action.session_id,

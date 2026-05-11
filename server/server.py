@@ -19,6 +19,7 @@ from .hooks import (
     hooks_endpoint,
     sessions_endpoint,
     snapshot_endpoint,
+    wrap_endpoint,
 )
 from .internal_dispatch import internal_notify_endpoint, internal_tool_endpoint
 from .mcp_app import mcp
@@ -103,6 +104,7 @@ routes = [
     Route("/api/actions", actions_endpoint, methods=["POST"]),
     Route("/api/sessions", sessions_endpoint, methods=["GET"]),
     Route("/api/sessions/{sid}", delete_session_endpoint, methods=["DELETE"]),
+    Route("/api/sessions/{sid}/wrap", wrap_endpoint, methods=["POST"]),
     Route("/api/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
     # /export/<sid>.md is a user-facing direct link (opened in a new tab),
     # so it stays at the top level rather than under /api/.
