@@ -316,6 +316,53 @@ async def _emit_wrap_channel(session: ServerSession, event_data: dict[str, Any])
         _log(f"wrap channel emit err: {type(e).__name__}: {e}")
 
 
+async def _emit_chat_accepted_channel(
+    session: ServerSession, event_data: dict[str, Any]
+) -> None:
+    """Map an SSE chat_accepted envelope to a notifications/claude/channel.
+
+    Fires after the GUI Accept commits a chat proposal (refine/redirect/
+    resolve). Without this wake, Claude has no signal Accept fired and the
+    GUI dead-ends on the now-locked card. Payload shape (type=chat_accepted):
+        {type, session_id, node_id, chat_id, outcome,
+         redirect_branch_id?, chosen_branch_id?}
+    redirect_branch_id is set only for outcome==redirect; chosen_branch_id
+    only for outcome==resolve. refine carries neither — the node stays
+    interactive and the skill picks the next move from the snapshot.
+    """
+    payload = event_data.get("payload") or {}
+    session_id = event_data.get("session_id") or ""
+    node_id = payload.get("node_id") or ""
+    chat_id = payload.get("chat_id") or ""
+    body: dict[str, Any] = {
+        "type": "chat_accepted",
+        "session_id": session_id,
+        "node_id": node_id,
+        "chat_id": chat_id,
+        "outcome": payload.get("outcome"),
+        "redirect_branch_id": payload.get("redirect_branch_id"),
+        "chosen_branch_id": payload.get("chosen_branch_id"),
+    }
+    meta = {
+        "session_id": str(session_id),
+        "node_id": str(node_id),
+        "chat_id": str(chat_id),
+        "kind": "chat_accepted",
+    }
+    try:
+        jr = JSONRPCNotification(
+            jsonrpc="2.0",
+            method="notifications/claude/channel",
+            params={"content": json.dumps(body), "meta": meta},
+        )
+        await session.send_message(SessionMessage(message=JSONRPCMessage(jr)))
+        _log(f"emitted chat_accepted channel session={session_id} node={node_id} outcome={body['outcome']}")
+    except Exception as e:
+        _log(f"chat_accepted channel emit err: {type(e).__name__}: {e}")
+    # No telemetry notify — chat_accepted carries no seq (not on the
+    # action-buffer flush counter); /internal/telemetry/notify is keyed on seq.
+
+
 async def _dispatch_emit(session: ServerSession, event_name: str, data: dict[str, Any]) -> None:
     if event_name == "node_committed":
         await _emit_channel(session, data)
@@ -323,6 +370,8 @@ async def _dispatch_emit(session: ServerSession, event_name: str, data: dict[str
         await _emit_wrap_channel(session, data)
     elif event_name == "chat_message_added":
         await _emit_chat_message_channel(session, data)
+    elif event_name == "chat_accepted":
+        await _emit_chat_accepted_channel(session, data)
 
 
 async def _sse_subscriber() -> None:
@@ -334,7 +383,7 @@ async def _sse_subscriber() -> None:
     """
     backoff = 1.0
     sse_path = f"/events?owner={OWNER_ID}"
-    bridged = {"node_committed", "session_wrap", "chat_message_added"}
+    bridged = {"node_committed", "session_wrap", "chat_message_added", "chat_accepted"}
     while True:
         try:
             async with httpx.AsyncClient(base_url=BASE_URL, timeout=None) as c:

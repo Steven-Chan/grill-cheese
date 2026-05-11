@@ -79,6 +79,21 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
    - `seq` is on the same per-session monotonic counter as shape A. Track it the same way.
    - See **Inline chat** section below for full semantics.
 
+   **D. chat-accept wake (GUI Accept clicked):**
+   ```
+   <channel source="grill-cheese" session_id="ab12cd34" node_id="n3" chat_id="abc..." kind="chat_accepted">
+   {"type": "chat_accepted", "session_id": "ab12cd34", "node_id": "n3",
+    "chat_id": "abc...", "outcome": "redirect",
+    "redirect_branch_id": "b9", "chosen_branch_id": null}
+   </channel>
+   ```
+   - Means: user clicked **Accept** in the GUI on a staged proposal. Server has already committed (ChatBlock appended, branches mutated, session resumed). Recognise by top-level `type == "chat_accepted"`.
+   - **You MUST push the next `present_branches` immediately** — without it the GUI dead-ends on the now-locked card. Pick `parent_node_id`/`parent_branch_id` from the payload:
+     - `outcome == "redirect"` → use `redirect_branch_id` as `parent_branch_id`. Node is read-only; the new question chains off the synth redirect branch.
+     - `outcome == "resolve"` → use `chosen_branch_id` as `parent_branch_id`. Node has a synth chosen branch; drilling chains off it.
+     - `outcome == "refine"` → both ids null. Node stays interactive — the option set was sharpened, not consumed. Either snapshot + drill off the newly-added branch, or treat the user's free-text in the chat as the redirect.
+   - No `seq` — not on the per-session monotonic counter (apply_chat_result mutates outside the action-buffer flush path).
+
 5. **Read the batch as a narrative and decide what to ask next.**
 
    The batch is usually a single terminal click; occasionally it bundles a chat trigger that flushed in the same idle window. The last terminal-class action is the user's final word.
@@ -140,13 +155,13 @@ When the user clicks **chat** on a node, the server pauses the session, locks th
    - END TURN. The next shape-C wake delivers the user's next message (or the next grill wake if the user accepted/closed).
 3. **When the chat has reached an answer:** call `propose_chat_outcome(session_id, node_id, chat_id, outcome, summary, ops?)` to stage the proposal. The GUI renders a banner with an Accept button. END TURN.
    - There is NO Reject button. If the user keeps typing instead of accepting, you'll receive more shape-C wakes — reply normally, and call `propose_chat_outcome` again later when the chat re-converges. Each call OVERWRITES the prior staged proposal (single-slot, no stacking).
-4. **On Accept:** server commits server-side, broadcasts `node_updated` + `chat_closed`, and resumes the session. You'll wake when you push the next `present_branches`. There is no wake event dedicated to "accept landed" — assume the next non-chat wake means the user has resumed grilling.
+4. **On Accept:** server commits server-side, broadcasts `node_updated` + `chat_closed`, resumes the session, AND emits a **shape D `chat_accepted` wake** (see step 4 of the main loop). The payload carries `outcome` plus `redirect_branch_id` (redirect) / `chosen_branch_id` (resolve) so you can push the next `present_branches` without a snapshot round-trip. **You MUST push immediately on this wake** — without it the GUI dead-ends on the now-locked card.
 5. **On Close (X button):** server discards the transcript + any pending proposal, unlocks the node, resumes the session. No ChatBlock is written. There is no wake event for close — if a stale chat_message somehow lands, the call will fail with `chat not open`; abandon the thread.
 
 ### Outcomes (same three as before)
 
 - **`refine`** — original question stands, option set sharpened. Pass `ops` with `adds` (new branches) and/or `removes` (branch ids to soft-delete). All-or-nothing on validation: unknown removes id -> err, nothing staged. Re-read snapshot + retry with the SAME chat_id.
-- **`redirect`** — original question is wrong. On Accept, server marks the node `redirected` and synthesizes a redirect branch. The next `present_branches` you push (after the user has resumed) should pass `parent_node_id=<this node>` and `parent_branch_id=<redirect id>`. The redirect id lives on the committed node — read it from `node.branches` (look for `rationale == "redirected via chat"`) or pull a fresh snapshot.
+- **`redirect`** — original question is wrong. On Accept, server marks the node `redirected` and synthesizes a redirect branch. The shape-D `chat_accepted` wake carries `redirect_branch_id` directly — pass it as `parent_branch_id` on the next `present_branches`. Fallback (if you somehow lost the wake): look in `node.branches` for `rationale == "redirected via chat"`.
 - **`resolve`** — chat itself is the answer. On Accept, server synthesizes a chosen branch and sets `chosen_branch_ids = [synth_id]`. Future drilling chains off that branch.
 
 ### `chat_id` discipline

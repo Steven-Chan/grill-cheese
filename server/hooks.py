@@ -325,6 +325,32 @@ async def _handle_chat_action(action: GuiAction) -> Response:
                 "payload": {"node_id": action.node_id, "chat_id": action.chat_id},
             },
         )
+        # chat_accepted: synth wake hook for the shim. Mirrors node_committed
+        # in spirit — Claude has no other signal Accept fired, and without a
+        # wake the GUI dead-ends on the locked card waiting for the next
+        # present_branches push. Payload carries enough metadata for the
+        # skill to pick parent_branch_id without a snapshot round-trip.
+        chat_block = node.chats[-1] if node.chats else None
+        outcome = chat_block.outcome if chat_block else None
+        chosen_bid = (
+            node.chosen_branch_ids[0]
+            if outcome == "resolve" and node.chosen_branch_ids
+            else None
+        )
+        await store.broadcast(
+            action.session_id,
+            {
+                "type": "chat_accepted",
+                "session_id": action.session_id,
+                "payload": {
+                    "node_id": action.node_id,
+                    "chat_id": action.chat_id,
+                    "outcome": outcome,
+                    "redirect_branch_id": redirect_bid,
+                    "chosen_branch_id": chosen_bid,
+                },
+            },
+        )
         await store.broadcast_session_list()
         resp: dict = {"ok": True}
         if redirect_bid:

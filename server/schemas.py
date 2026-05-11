@@ -172,8 +172,11 @@ class Session(BaseModel):
 # ---- SSE outbound events (server -> GUI) ----
 # Event types: session_started, session_list, session_ended, session_deleted,
 # session_paused, session_resumed, session_wrap, node_added, node_updated,
-# node_committed, hook_event. session_wrap fires when the toolbar Wrap-up
-# endpoint is hit; payload is empty {} (session id carries the context).
+# node_committed, chat_message_added, chat_accepted, chat_closed, hook_event.
+# session_wrap fires when the toolbar Wrap-up endpoint is hit; payload is
+# empty {} (session id carries the context). chat_accepted fires after the
+# GUI Accept commits a staged chat proposal — shim bridges it to channel
+# so Claude wakes and pushes the next present_branches (no more dead-end).
 
 class SseEvent(BaseModel):
     type: str
