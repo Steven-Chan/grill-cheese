@@ -175,15 +175,6 @@ function DecisionCard({
           >
             Chat
           </button>
-          <button
-            type="button"
-            className="gc-btn gc-btn-secondary"
-            disabled={locked || !!busy}
-            onClick={() => send("stop", { skipPicks: true })}
-            title="Wrap up the session — Claude will draft a summary"
-          >
-            Wrap up
-          </button>
         </div>
       </div>
 

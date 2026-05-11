@@ -1,43 +1,37 @@
-import { useState } from "react";
 import { useSession } from "../SessionContext";
 import { HistoryEntry } from "./HistoryEntry";
 
-export function SidebarHistory() {
+interface Props {
+  open: boolean;
+}
+
+export function SidebarHistory({ open }: Props) {
   const { state } = useSession();
-  const [open, setOpen] = useState(true);
+  if (!open) return null;
 
   // exclude the currently-pending node (it lives in the BigCard)
   const past = state.nodeOrder.filter((id) => id !== state.pendingNodeId);
 
   return (
-    <div className={`gc-sidebar${open ? " open" : " collapsed"}`}>
+    <div className="gc-sidebar open">
       <header className="gc-sidebar-head">
-        <button
-          type="button"
-          className="gc-sidebar-toggle"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-        >
-          {open ? "▾" : "▸"} history ({past.length})
-        </button>
+        <span className="gc-sidebar-title">history ({past.length})</span>
       </header>
-      {open && (
-        <ol className="gc-sidebar-feed">
-          {past.length === 0 ? (
-            <li className="gc-dim gc-sidebar-empty">no decisions yet</li>
-          ) : (
-            past.map((nid) => {
-              const n = state.nodes[nid];
-              if (!n) return null;
-              return (
-                <li key={nid}>
-                  <HistoryEntry node={n} />
-                </li>
-              );
-            })
-          )}
-        </ol>
-      )}
+      <ol className="gc-sidebar-feed">
+        {past.length === 0 ? (
+          <li className="gc-dim gc-sidebar-empty">no decisions yet</li>
+        ) : (
+          past.map((nid) => {
+            const n = state.nodes[nid];
+            if (!n) return null;
+            return (
+              <li key={nid}>
+                <HistoryEntry node={n} />
+              </li>
+            );
+          })
+        )}
+      </ol>
     </div>
   );
 }
