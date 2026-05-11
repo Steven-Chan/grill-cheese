@@ -68,6 +68,27 @@ function orderNodes(nodes: Record<string, DecisionNode>): string[] {
     .map((n) => n.id);
 }
 
+// Server schema has `is_flushed` but not `committed`. Without this mirror, a
+// node_updated broadcast (parent update, post-apply mutation) overwrites a
+// previously-committed node with `committed=undefined`, breaking findPending
+// + BigCard fallback (the wiped node looks pending again).
+function mirrorCommitted(
+  incoming: DecisionNode,
+  existing?: DecisionNode,
+): DecisionNode {
+  const flushed = !!incoming.is_flushed;
+  return {
+    ...incoming,
+    committed: flushed,
+    // committed_action only arrives on node_committed, never on node_updated.
+    // Preserve it while still flushed; clear on unlock (chat-refine path
+    // resets is_flushed=false server-side).
+    committed_action: flushed
+      ? existing?.committed_action ?? incoming.committed_action ?? null
+      : null,
+  };
+}
+
 // Pending = last decision/summary node that isn't committed, isn't redirected,
 // isn't implicit (silent record-only), and hasn't already had a pick land.
 // chosen_branch_ids.length>0 catches chat-resolve (server synthesises a chosen
@@ -90,6 +111,10 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case "hydrate": {
       const snap = action.snapshot;
       const order = orderNodes(snap.nodes);
+      const nodes: Record<string, DecisionNode> = {};
+      for (const [id, n] of Object.entries(snap.nodes)) {
+        nodes[id] = mirrorCommitted(n);
+      }
       const next: SessionState = {
         ...state,
         loaded: true,
@@ -101,7 +126,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         paused: snap.paused_node_id
           ? { node_id: snap.paused_node_id, branch_id: snap.paused_branch_id }
           : null,
-        nodes: { ...snap.nodes },
+        nodes,
         nodeOrder: order,
       };
       next.pendingNodeId = findPending(next);
@@ -124,7 +149,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case "session_resumed":
       return { ...state, status: "active", paused: null };
     case "node_added": {
-      const nodes = { ...state.nodes, [action.node.id]: action.node };
+      const merged = mirrorCommitted(action.node, state.nodes[action.node.id]);
+      const nodes = { ...state.nodes, [action.node.id]: merged };
       const nodeOrder = state.nodeOrder.includes(action.node.id)
         ? state.nodeOrder
         : [...state.nodeOrder, action.node.id];
@@ -133,7 +159,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       return next;
     }
     case "node_updated": {
-      const nodes = { ...state.nodes, [action.node.id]: action.node };
+      const merged = mirrorCommitted(action.node, state.nodes[action.node.id]);
+      const nodes = { ...state.nodes, [action.node.id]: merged };
       const next = { ...state, nodes };
       next.pendingNodeId = findPending(next);
       return next;
