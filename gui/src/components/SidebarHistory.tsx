@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import { useSession } from "../SessionContext";
 import { HistoryEntry } from "./HistoryEntry";
@@ -6,10 +7,22 @@ interface Props {
   open: boolean;
   selectedNodeId: string | null;
   onSelect: (id: string | null) => void;
+  onClose: () => void;
 }
 
-export function SidebarHistory({ open, selectedNodeId, onSelect }: Props) {
+export function SidebarHistory({ open, selectedNodeId, onSelect, onClose }: Props) {
   const { state } = useSession();
+
+  // Escape closes drawer
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
 
   // effective row currently shown in BigCard
@@ -25,6 +38,15 @@ export function SidebarHistory({ open, selectedNodeId, onSelect }: Props) {
     <div className="gc-sidebar open">
       <header className="gc-sidebar-head">
         <span className="gc-sidebar-title">history ({state.nodeOrder.length})</span>
+        <button
+          type="button"
+          className="gc-sidebar-close"
+          onClick={onClose}
+          aria-label="dismiss history"
+          title="Hide history"
+        >
+          ×
+        </button>
       </header>
       <ol className="gc-sidebar-feed">
         {state.nodeOrder.length === 0 ? (

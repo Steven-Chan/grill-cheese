@@ -102,6 +102,7 @@ function DetailShell() {
           <ActiveLayout
             onToast={setToast}
             sidebarOpen={sidebarOpen}
+            setSidebarOpen={setSidebarOpen}
             selectedNodeId={selectedNodeId}
             onSelect={setSelectedNodeId}
           />
@@ -198,16 +199,18 @@ function HeaderMenu({
 function ActiveLayout({
   onToast,
   sidebarOpen,
+  setSidebarOpen,
   selectedNodeId,
   onSelect,
 }: {
   onToast: (msg: string) => void;
   sidebarOpen: boolean;
+  setSidebarOpen: (v: boolean) => void;
   selectedNodeId: string | null;
   onSelect: (id: string | null) => void;
 }) {
   return (
-    <div className={`gc-active${sidebarOpen ? " with-sidebar" : ""}`}>
+    <div className="gc-active">
       <div className="gc-active-card">
         <BigCard
           onToast={onToast}
@@ -217,7 +220,12 @@ function ActiveLayout({
       </div>
       {sidebarOpen && (
         <aside className="gc-active-sidebar">
-          <SidebarHistory open={sidebarOpen} selectedNodeId={selectedNodeId} onSelect={onSelect} />
+          <SidebarHistory
+            open={sidebarOpen}
+            selectedNodeId={selectedNodeId}
+            onSelect={onSelect}
+            onClose={() => setSidebarOpen(false)}
+          />
         </aside>
       )}
     </div>
