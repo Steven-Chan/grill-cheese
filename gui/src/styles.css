@@ -10,8 +10,8 @@
   --gc-warn: #e88e5d;
   --gc-rec: #d4a554;
   --gc-impl: #b07cc7;
-  --gc-serif: "Instrument Serif", "Iowan Old Style", Georgia, serif;
-  --gc-mono: "IBM Plex Mono", "JetBrains Mono", ui-monospace, monospace;
+  --gc-serif: "Ubuntu", "Helvetica Neue", Arial, sans-serif;
+  --gc-mono: "Ubuntu Mono", "JetBrains Mono", ui-monospace, monospace;
 }
 
 * { box-sizing: border-box; }
