@@ -14,6 +14,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .hooks import (
     actions_endpoint,
+    delete_session_endpoint,
     export_md_endpoint,
     hooks_endpoint,
     sessions_endpoint,
@@ -81,6 +82,7 @@ routes = [
     Route("/hooks", hooks_endpoint, methods=["POST"]),
     Route("/actions", actions_endpoint, methods=["POST"]),
     Route("/sessions", sessions_endpoint, methods=["GET"]),
+    Route("/sessions/{sid}", delete_session_endpoint, methods=["DELETE"]),
     Route("/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
     Route("/export/{sid}.md", export_md_endpoint, methods=["GET"]),
     # /internal/tool/{name} — JSON dispatch used by the stdio shim. 127.0.0.1 only.

@@ -76,6 +76,13 @@ export function exportMarkdownUrl(sid: string): string {
   return `/export/${sid}.md`;
 }
 
+export async function deleteSession(sid: string): Promise<void> {
+  const res = await fetch(`/sessions/${sid}`, { method: "DELETE" });
+  if (!res.ok) {
+    throw new Error(`delete failed: ${res.status}`);
+  }
+}
+
 export async function exportJson(sid: string): Promise<Blob> {
   const r = await fetch(`/snapshot/${sid}`);
   const text = await r.text();

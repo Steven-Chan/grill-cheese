@@ -89,6 +89,7 @@ export type SseEvent =
   | { type: "session_started"; session_id: string; payload: { title: string | null; brief: string; started_at: number } }
   | { type: "session_list"; session_id: ""; payload: { sessions: SessionMeta[] } }
   | { type: "session_ended"; session_id: string; payload: { summary: string; ended_at: number } }
+  | { type: "session_deleted"; session_id: string; payload: { project: string } }
   | { type: "session_paused"; session_id: string; payload: { node_id: string; branch_id: string | null } }
   | { type: "session_resumed"; session_id: string; payload: Record<string, unknown> }
   | { type: "node_added"; session_id: string; payload: DecisionNode }

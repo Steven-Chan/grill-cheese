@@ -203,6 +203,18 @@ async def sessions_endpoint(request: Request) -> Response:
     )
 
 
+async def delete_session_endpoint(request: Request) -> Response:
+    """DELETE /sessions/{sid} → move to per-project trash/. Tears down active
+    + paused sessions too (GUI confirms first). 204 on success, 404 if no
+    such session."""
+    sid = request.path_params.get("sid", "")
+    ok = await store.delete_session(sid)
+    if not ok:
+        return JSONResponse({"ok": False, "err": "not found"}, status_code=404)
+    forget_session(sid)
+    return Response(status_code=204)
+
+
 async def snapshot_endpoint(request: Request) -> Response:
     """GET /snapshot/{sid} → full session state."""
     sid = request.path_params.get("sid", "")

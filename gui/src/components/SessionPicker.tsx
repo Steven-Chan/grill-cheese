@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useStore } from "../store";
+import { deleteSession } from "../api";
 import type { SessionMeta } from "../types";
 
 function relTime(ts: number): string {
@@ -93,8 +94,23 @@ function SessionRow({
   // title fallback: brief[:80] for legacy sessions, "(untitled)" if both empty
   const displayTitle =
     meta.title || (meta.brief ? meta.brief.slice(0, 80) : "(untitled)");
+
+  const onDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    // confirm only for non-ended; ended sessions delete with no prompt
+    if (meta.status !== "ended") {
+      const ok = window.confirm(
+        `Delete session "${displayTitle}"?\nMoves to trash; wiped on next server restart.`
+      );
+      if (!ok) return;
+    }
+    deleteSession(meta.id).catch(() => {
+      useStore.getState().setToast("delete failed");
+    });
+  };
+
   return (
-    <li>
+    <li className="gc-session-row-wrap">
       <button
         type="button"
         className={`gc-session-row${isCurrent ? " current" : ""}`}
@@ -115,6 +131,15 @@ function SessionRow({
         <span className="gc-session-meta">
           · {meta.id.slice(0, 6)} · {relTime(meta.started_at)}
         </span>
+      </button>
+      <button
+        type="button"
+        className="gc-session-delete"
+        aria-label="Delete session"
+        title="Delete session"
+        onClick={onDelete}
+      >
+        ×
       </button>
     </li>
   );

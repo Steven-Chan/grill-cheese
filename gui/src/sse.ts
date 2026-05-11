@@ -21,6 +21,7 @@ export function connectSse(sessionId: string | null) {
     "session_started",
     "session_list",
     "session_ended",
+    "session_deleted",
     "session_paused",
     "session_resumed",
     "node_added",
@@ -57,6 +58,24 @@ function handle(raw: string) {
     case "session_ended":
       s.setEnded(ev.payload.summary);
       break;
+    case "session_deleted": {
+      const deletedSid = ev.session_id;
+      const project = ev.payload.project;
+      if (s.activeSessionId === deletedSid) {
+        // pick most-recent same-project survivor; fallback to reset.
+        // session_list re-broadcast lands shortly after; we read current
+        // sessions list and exclude the deleted sid manually.
+        const survivors = s.sessions
+          .filter((x) => x.id !== deletedSid && (x.project ?? "") === (project ?? ""))
+          .sort((a, b) => b.started_at - a.started_at);
+        if (survivors.length > 0) {
+          s.setActive(survivors[0].id);
+        } else {
+          s.reset();
+        }
+      }
+      break;
+    }
     case "session_paused":
       s.setPaused({ node_id: ev.payload.node_id, branch_id: ev.payload.branch_id });
       break;

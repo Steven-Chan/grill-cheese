@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useStore } from "../store";
-import { exportMarkdownUrl, postAction } from "../api";
+import { deleteSession, exportMarkdownUrl, postAction } from "../api";
 import { SessionPicker } from "./SessionPicker";
 
 export function Toolbar() {
@@ -33,6 +33,19 @@ export function Toolbar() {
   const displayTitle = sid ? (title || (brief ? brief.slice(0, 80) : "")) : "";
   const meta = sid ? sessions.find((s) => s.id === sid) : undefined;
   const isEnded = meta?.status === "ended";
+
+  const onDelete = () => {
+    if (!sid || !meta) return;
+    if (meta.status !== "ended") {
+      const ok = window.confirm(
+        `Delete session "${displayTitle}"?\nMoves to trash; wiped on next server restart.`
+      );
+      if (!ok) return;
+    }
+    deleteSession(sid).catch(() => {
+      useStore.getState().setToast("delete failed");
+    });
+  };
 
   return (
     <header className="gc-toolbar">
@@ -68,6 +81,9 @@ export function Toolbar() {
                 wrap up
               </button>
             )}
+            <button className="gc-btn ghost gc-btn-delete" onClick={onDelete} title="Delete session">
+              delete
+            </button>
           </>
         )}
         <button

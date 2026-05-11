@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 import pathlib
+import shutil
 import time
 import uuid
 from collections import defaultdict, deque
@@ -64,6 +65,10 @@ class Store:
         slug = project if project else "_default"
         return self._data_root / f"project-{slug}" / "sessions"
 
+    def _trash_dir(self, project: str) -> pathlib.Path:
+        slug = project if project else "_default"
+        return self._data_root / f"project-{slug}" / "trash"
+
     def _persist(self, session: Session) -> None:
         """Atomic write of session JSON. Sync I/O — sessions are KB-scale."""
         d = self._session_dir(session.project)
@@ -88,6 +93,15 @@ class Store:
         root = self._data_root
         if not root.exists():
             return
+        # wipe all trash dirs unconditionally on startup — undo window for
+        # deleted sessions is "until next server restart"
+        for proj_dir in sorted(root.glob("project-*")):
+            trash = proj_dir / "trash"
+            if trash.exists():
+                try:
+                    shutil.rmtree(trash)
+                except Exception:
+                    logger.exception("failed to wipe trash dir %s", trash)
         for proj_dir in sorted(root.glob("project-*")):
             if not proj_dir.is_dir():
                 continue
@@ -391,6 +405,79 @@ class Store:
         self._bump_status_event(sid)
         self._persist(s)
         return s
+
+    # ---- delete ----
+    async def delete_session(self, sid: str) -> bool:
+        """Move session.json + .events.jsonl to per-project trash/, drop all
+        in-memory state, broadcast session_deleted + session_list. Trash is
+        wiped on next server startup.
+
+        Active/paused sessions are torn down too — caller must have user
+        confirm beforehand (GUI does this via window.confirm()).
+        """
+        s = self.sessions.get(sid)
+        if s is None:
+            return False
+        project = s.project
+        owner = s.owner_id
+
+        # cancel any debounce timers + release per-node event waiters.
+        # Mirror unlock_node's pattern: .set() any unset event before dropping
+        # so stragglers awaiting get_event(node_id).wait() unblock.
+        for node_id in list(s.nodes.keys()):
+            timer = self._timers.pop(node_id, None)
+            if timer is not None:
+                timer.cancel()
+            old_ev = self._events.pop(node_id, None)
+            if old_ev is not None and not old_ev.is_set():
+                old_ev.set()
+        # rotate status event so any waiters unblock
+        old_status = self._status_events.pop(sid, None)
+        if old_status is not None and not old_status.is_set():
+            old_status.set()
+
+        # move files (json + jsonl sibling pair) to trash
+        sess_dir = self._session_dir(project)
+        trash_dir = self._trash_dir(project)
+        try:
+            trash_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logger.exception("failed to mkdir trash %s", trash_dir)
+        for name in (f"{sid}.json", f"{sid}.events.jsonl"):
+            src = sess_dir / name
+            if src.exists():
+                dst = trash_dir / name
+                try:
+                    os.replace(src, dst)
+                except Exception:
+                    logger.exception("failed to move %s -> %s", src, dst)
+
+        # drop in-memory state
+        self.sessions.pop(sid, None)
+        self.ring.pop(sid, None)
+
+        # broadcast session_deleted to per-sid + global + owner subs.
+        # Built inline because self.broadcast() reads owner_id from
+        # sessions[sid] under the lock, and we just popped it.
+        ev = {
+            "type": "session_deleted",
+            "session_id": sid,
+            "payload": {"project": project},
+        }
+        async with self._lock:
+            targets: list[asyncio.Queue[dict[str, Any]]] = (
+                list(self._subs.get(sid, [])) + list(self._global_subs)
+            )
+            if owner:
+                targets += list(self._owner_subs.get(owner, []))
+        for q in targets:
+            try:
+                q.put_nowait(ev)
+            except asyncio.QueueFull:
+                pass
+
+        await self.broadcast_session_list()
+        return True
 
     # ---- branch state mutation from GUI ----
     def apply_action(self, action: GuiAction) -> Optional[AskBranchesResult]:
@@ -839,12 +926,16 @@ class Store:
                 self._global_subs.remove(q)
 
     async def broadcast(self, sid: str, ev: dict[str, Any]) -> None:
-        self.ring[sid].append(ev)
         async with self._lock:
-            # owner_id read under lock — serialises with set_session_owner so
-            # the first flush after start_session can't race the stamp.
+            # ring append + session existence check happen under the lock so
+            # a delete_session that popped sessions[sid] races cleanly: any
+            # _flush-scheduled broadcast for the deleted sid drops here
+            # instead of resurrecting ring[sid] via defaultdict.
             s = self.sessions.get(sid)
-            owner = s.owner_id if s else None
+            if s is None:
+                return
+            owner = s.owner_id
+            self.ring[sid].append(ev)
             targets = list(self._subs.get(sid, [])) + list(self._global_subs)
             if owner:
                 targets += list(self._owner_subs.get(owner, []))

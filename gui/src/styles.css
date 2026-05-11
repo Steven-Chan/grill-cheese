@@ -180,6 +180,40 @@ body,
   flex-direction: column;
   gap: 2px;
 }
+.gc-session-row-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+.gc-session-row-wrap .gc-session-row {
+  flex: 1;
+  /* leave room for delete button so the row text doesn't sit under it */
+  padding-right: 36px;
+}
+.gc-session-delete {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--gc-fg-faint);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s, background 0.12s;
+}
+.gc-session-row-wrap:hover .gc-session-delete,
+.gc-session-delete:focus-visible {
+  opacity: 1;
+}
+.gc-session-delete:hover {
+  color: var(--gc-warn);
+  background: var(--gc-bg-card);
+}
 .gc-session-row {
   width: 100%;
   display: flex;
@@ -778,6 +812,10 @@ body,
 .gc-btn.ghost {
   background: transparent;
   color: var(--gc-fg-dim);
+}
+.gc-btn.gc-btn-delete:hover {
+  color: var(--gc-warn);
+  border-color: var(--gc-warn);
 }
 .gc-link {
   background: none;
