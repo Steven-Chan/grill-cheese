@@ -10,8 +10,18 @@ export function SessionListPage() {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(listReducer, initialListState);
   const [toast, setToast] = useState<string | null>(null);
+  const [brandMode, setBrandMode] = useState<"fire" | "cheese">("fire");
   const dispatchRef = useRef(dispatch);
   dispatchRef.current = dispatch;
+
+  // brand flame cycles fire (7.5s) <-> cheese (3.5s) for charm
+  useEffect(() => {
+    const delay = brandMode === "fire" ? 7500 : 3500;
+    const id = window.setTimeout(() => {
+      setBrandMode((m) => (m === "fire" ? "cheese" : "fire"));
+    }, delay);
+    return () => window.clearTimeout(id);
+  }, [brandMode]);
 
   // initial fetch
   useEffect(() => {
@@ -59,7 +69,7 @@ export function SessionListPage() {
     <div className="gc-page gc-list-page">
       <header className="gc-list-header">
         <h1>
-          <FireAnimation size={32} />
+          <FireAnimation size={32} state={brandMode} />
           <span>grill·<span className="gc-brand-cheese">cheese</span></span>
         </h1>
         <p className="gc-dim">
