@@ -57,6 +57,33 @@ BASE_URL = f"http://{HOST}:{PORT}"
 # (one CC lifecycle = one owner).
 OWNER_ID = uuid.uuid4().hex
 
+
+def _capture_cmux_env() -> str | None:
+    """Snapshot cmux deep-link coords from this process's env (inherited from
+    the cmux pane that spawned CC -> spawned this shim). Returns a JSON
+    string for the X-Grill-Cmux HTTP header, or None when not running under
+    cmux. Static for shim lifetime — stamped once on the AsyncClient."""
+    workspace = os.environ.get("CMUX_WORKSPACE_ID")
+    if not workspace:
+        return None
+    blob = {
+        "workspace_id": workspace,
+        # CMUX_PANEL_ID is the split surface CC is running in. Without it
+        # focus-panel can't aim — but workspace-only jump is still useful,
+        # so accept absence.
+        "panel_id": os.environ.get("CMUX_PANEL_ID")
+        or os.environ.get("CMUX_SURFACE_ID"),
+        "socket_path": os.environ.get("CMUX_SOCKET_PATH"),
+        # Absolute binary location exported by cmux so the server doesn't
+        # need cmux on its PATH.
+        "bin_path": os.environ.get("CMUX_CLAUDE_HOOK_CMUX_BIN")
+        or os.environ.get("CMUX_BUNDLED_CLI_PATH"),
+    }
+    return json.dumps(blob)
+
+
+CMUX_HEADER = _capture_cmux_env()
+
 # wait_for_action is intentionally NOT exposed: Channels replace it.
 EXCLUDED_TOOLS = {"wait_for_action"}
 
@@ -75,10 +102,13 @@ _client: httpx.AsyncClient | None = None
 async def _http() -> httpx.AsyncClient:
     global _client
     if _client is None:
+        headers: dict[str, str] = {"X-Grill-Owner": OWNER_ID}
+        if CMUX_HEADER:
+            headers["X-Grill-Cmux"] = CMUX_HEADER
         _client = httpx.AsyncClient(
             base_url=BASE_URL,
             timeout=httpx.Timeout(120.0),
-            headers={"X-Grill-Owner": OWNER_ID},
+            headers=headers,
         )
     return _client
 

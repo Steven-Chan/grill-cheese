@@ -76,6 +76,15 @@ export interface HookTrace {
 
 export type SessionStatus = "active" | "paused" | "ended";
 
+// Deep-link coords for the cmux pane hosting this CC session. All fields
+// optional — workspace_id is the only one required to make any jump useful.
+export interface CmuxInfo {
+  workspace_id?: string | null;
+  panel_id?: string | null;
+  socket_path?: string | null;
+  bin_path?: string | null;
+}
+
 export interface SessionMeta {
   id: string;
   title: string | null;
@@ -95,6 +104,7 @@ export type SseEvent =
   | { type: "hello"; session_id: string; payload: Record<string, unknown> }
   | { type: "ping"; session_id: string; payload: Record<string, unknown> }
   | { type: "session_started"; session_id: string; payload: { title: string | null; brief: string; started_at: number } }
+  | { type: "session_meta"; session_id: string; payload: { cmux?: CmuxInfo | null } }
   | { type: "session_list"; session_id: ""; payload: { sessions: SessionMeta[] } }
   | { type: "session_ended"; session_id: string; payload: { summary: string; ended_at: number } }
   | { type: "session_deleted"; session_id: string; payload: { project: string } }

@@ -18,6 +18,7 @@ from .schemas import (
     Branch,
     ChatBlock,
     ChatOps,
+    CmuxInfo,
     GuiAction,
     HookEvent,
     Node,
@@ -151,6 +152,33 @@ class Store:
         self.sessions[sid] = s
         self._persist(s)
         return s
+
+    async def set_session_cmux(self, sid: str, cmux: CmuxInfo) -> bool:
+        """Stamp cmux coords post-hoc. Called by internal_dispatch on
+        start_session when X-Grill-Cmux header is present. Idempotent —
+        re-stamping with the same payload is a no-op. Different payload
+        overwrites (handy when shim restarts inside same cmux panel).
+
+        Broadcasts session_meta on change so a live GUI (already
+        subscribed to /events before start_session fired session_started
+        without cmux) hydrates the deep-link without a full reload."""
+        async with self._lock:
+            s = self.sessions.get(sid)
+            if s is None:
+                return False
+            if s.cmux == cmux:
+                return True
+            s.cmux = cmux
+        self._persist(s)
+        await self.broadcast(
+            sid,
+            {
+                "type": "session_meta",
+                "session_id": sid,
+                "payload": {"cmux": cmux.model_dump()},
+            },
+        )
+        return True
 
     async def set_session_owner(self, sid: str, owner_id: str) -> bool:
         """Stamp owner_id post-hoc. Used by internal_dispatch on start_session

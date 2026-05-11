@@ -1,7 +1,10 @@
 """HTTP endpoints for Claude Code hook events + GUI actions."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import os
 import time
 
 from starlette.requests import Request
@@ -10,6 +13,8 @@ from starlette.responses import JSONResponse, Response
 from .schemas import GuiAction, HookEvent
 from .state import SUMMARY_END_ACTIONS, TERMINAL_ACTIONS, store
 from .telemetry import forget_session
+
+logger = logging.getLogger(__name__)
 
 
 async def hooks_endpoint(request: Request) -> Response:
@@ -275,6 +280,79 @@ async def snapshot_endpoint(request: Request) -> Response:
     if not s:
         return JSONResponse({"err": "not found"}, status_code=404)
     return JSONResponse(s.model_dump())
+
+
+# Fallback cmux binary names searched on PATH when the session record doesn't
+# carry an absolute bin_path (older sessions, or env where the var was missing).
+_CMUX_BIN_FALLBACKS = ("cmux",)
+
+
+async def _run_cmux(
+    bin_path: str,
+    args: list[str],
+    socket_path: str | None,
+) -> tuple[int, str]:
+    """Shell `cmux ...` with CMUX_SOCKET_PATH set when known. Returns (rc, stderr)."""
+    env = dict(os.environ)
+    if socket_path:
+        env["CMUX_SOCKET_PATH"] = socket_path
+    proc = await asyncio.create_subprocess_exec(
+        bin_path,
+        *args,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        # reap the zombie — communicate() was abandoned, so wait explicitly
+        await proc.wait()
+        return 124, "cmux call timed out"
+    return proc.returncode or 0, (stderr or b"").decode("utf-8", "replace")
+
+
+async def jump_to_cmux_endpoint(request: Request) -> Response:
+    """POST /api/sessions/{sid}/jump-to-cmux → focus the cmux pane that hosts
+    this session. Two sequential CLI calls: select-workspace, then focus-panel
+    (best-effort, missing panel_id falls back to workspace-only)."""
+    sid = request.path_params.get("sid", "")
+    s = store.get(sid)
+    if not s:
+        return JSONResponse({"ok": False, "err": "session not found"}, status_code=404)
+    if not s.cmux or not s.cmux.workspace_id:
+        return JSONResponse(
+            {"ok": False, "err": "no cmux coords for this session"},
+            status_code=409,
+        )
+    cmux = s.cmux
+    bin_path = cmux.bin_path or _CMUX_BIN_FALLBACKS[0]
+    rc, err = await _run_cmux(
+        bin_path,
+        ["select-workspace", "--workspace", cmux.workspace_id],
+        cmux.socket_path,
+    )
+    if rc != 0:
+        logger.warning("cmux select-workspace failed rc=%s err=%s", rc, err[:200])
+        return JSONResponse(
+            {"ok": False, "err": f"select-workspace rc={rc}: {err[:200]}"},
+            status_code=502,
+        )
+    if cmux.panel_id:
+        rc2, err2 = await _run_cmux(
+            bin_path,
+            [
+                "focus-panel",
+                "--panel", cmux.panel_id,
+                "--workspace", cmux.workspace_id,
+            ],
+            cmux.socket_path,
+        )
+        # focus-panel is best-effort — workspace switch already succeeded.
+        if rc2 != 0:
+            logger.info("cmux focus-panel rc=%s err=%s", rc2, err2[:200])
+    return JSONResponse({"ok": True})
 
 
 async def export_md_endpoint(request: Request) -> Response:

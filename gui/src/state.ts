@@ -1,4 +1,4 @@
-import type { DecisionNode, PausedState, SessionMeta, SessionStatus } from "./types";
+import type { CmuxInfo, DecisionNode, PausedState, SessionMeta, SessionStatus } from "./types";
 
 // Per-session reducer state. List state lives separately (useReducer in list page).
 export interface SessionState {
@@ -19,11 +19,14 @@ export interface SessionState {
   // toolbar Wrap-up fired; awaiting skill's present_summary push. Cleared
   // on session_ended / continue_grill / fresh session_started.
   wrapping: boolean;
+  // null when CC wasn't launched inside cmux. Enables "Jump to terminal".
+  cmux: CmuxInfo | null;
 }
 
 export type SessionAction =
   | { type: "hydrate"; snapshot: Snapshot }
   | { type: "session_started"; title: string | null; brief: string; project?: string; startedAt: number }
+  | { type: "session_meta"; cmux?: CmuxInfo | null }
   | { type: "session_ended"; summary: string }
   | { type: "session_paused"; paused: PausedState }
   | { type: "session_resumed" }
@@ -47,6 +50,7 @@ export interface Snapshot {
   nodes: Record<string, DecisionNode>;
   // server returns root_node_id + nodes; we derive order via BFS from root + insertion fallback
   root_node_id: string | null;
+  cmux?: CmuxInfo | null;
 }
 
 export function initialSessionState(sid: string): SessionState {
@@ -64,6 +68,7 @@ export function initialSessionState(sid: string): SessionState {
     nodeOrder: [],
     pendingNodeId: null,
     wrapping: false,
+    cmux: null,
   };
 }
 
@@ -137,6 +142,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         nodes,
         nodeOrder: order,
         wrapping: snap.wrap_summary_node_id != null,
+        cmux: snap.cmux ?? null,
       };
       next.pendingNodeId = findPending(next);
       return next;
@@ -151,6 +157,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         startedAt: action.startedAt,
         status: "active",
       };
+    case "session_meta":
+      return { ...state, cmux: action.cmux ?? state.cmux };
     case "session_ended":
       return { ...state, endedSummary: action.summary, status: "ended", pendingNodeId: null, paused: null, wrapping: false };
     case "session_paused":

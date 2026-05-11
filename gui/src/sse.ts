@@ -23,6 +23,7 @@ export function openSse(sessionId: string | null, onEvent: (ev: SseEvent) => voi
     "hello",
     "ping",
     "session_started",
+    "session_meta",
     "session_list",
     "session_ended",
     "session_deleted",

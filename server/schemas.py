@@ -92,6 +92,18 @@ class Node(BaseModel):
 SessionStatus = Literal["active", "paused", "ended"]
 
 
+class CmuxInfo(BaseModel):
+    """Terminal-multiplexer coords captured at session start so the GUI can
+    deep-link back to the cmux pane that hosts this CC session. Stamped post-
+    `start_session` from an X-Grill-Cmux header on the shim's HTTP client.
+    All fields optional — partial capture is still useful (workspace-only
+    jump is a valid fallback when panel_id is missing)."""
+    workspace_id: Optional[str] = None
+    panel_id: Optional[str] = None
+    socket_path: Optional[str] = None
+    bin_path: Optional[str] = None
+
+
 class Session(BaseModel):
     model_config = {"extra": "ignore"}
 
@@ -103,6 +115,8 @@ class Session(BaseModel):
     # session are only delivered to subscribers matching this owner — keeps
     # parallel CC instances from cross-talking.
     owner_id: Optional[str] = None
+    # cmux deep-link coords (None if CC was not launched inside cmux).
+    cmux: Optional[CmuxInfo] = None
     schema_version: int = 1
     started_at: float
     status: SessionStatus = "active"

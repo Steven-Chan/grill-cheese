@@ -5,7 +5,7 @@ import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
 import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
-import { exportMarkdownUrl, postWrap, type ActionRejection } from "../api";
+import { exportMarkdownUrl, postJumpToCmux, postWrap, type ActionRejection } from "../api";
 
 export function SessionDetailPage() {
   const { sid } = useParams<{ sid: string }>();
@@ -39,6 +39,25 @@ function DetailShell() {
 
   const showWrapUp =
     state.loaded && state.status !== "ended" && state.nodeOrder.length > 0 && !state.wrapping;
+  const canJumpToCmux = !!state.cmux?.workspace_id;
+  const [jumping, setJumping] = useState(false);
+
+  const onJumpToCmux = async () => {
+    if (jumping) return;
+    setJumping(true);
+    try {
+      await postJumpToCmux(state.sid);
+    } catch (e) {
+      const rej = e as ActionRejection;
+      if (rej && typeof rej.status === "number") {
+        setToast(`Jump failed: ${rej.err ?? rej.status}`);
+      } else {
+        setToast("Network error");
+      }
+    } finally {
+      setJumping(false);
+    }
+  };
 
   // Session-level wrap-up — no node id. Server emits session_wrap; skill
   // wakes and pushes the summary card.
@@ -68,6 +87,17 @@ function DetailShell() {
           </Link>
           <h1 className="gc-detail-title">{state.title ?? state.sid}</h1>
           <div className="gc-detail-actions">
+            {canJumpToCmux && (
+              <button
+                type="button"
+                className="gc-btn gc-btn-toolbar"
+                onClick={onJumpToCmux}
+                disabled={jumping}
+                title="Focus the cmux pane running this Claude Code session"
+              >
+                {jumping ? "jumping…" : "↗ cmux"}
+              </button>
+            )}
             {state.status !== "ended" && state.nodeOrder.length > 0 && (
               <button
                 type="button"

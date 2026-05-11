@@ -17,6 +17,7 @@ from .hooks import (
     delete_session_endpoint,
     export_md_endpoint,
     hooks_endpoint,
+    jump_to_cmux_endpoint,
     sessions_endpoint,
     snapshot_endpoint,
     wrap_endpoint,
@@ -105,6 +106,7 @@ routes = [
     Route("/api/sessions", sessions_endpoint, methods=["GET"]),
     Route("/api/sessions/{sid}", delete_session_endpoint, methods=["DELETE"]),
     Route("/api/sessions/{sid}/wrap", wrap_endpoint, methods=["POST"]),
+    Route("/api/sessions/{sid}/jump-to-cmux", jump_to_cmux_endpoint, methods=["POST"]),
     Route("/api/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
     # /export/<sid>.md is a user-facing direct link (opened in a new tab),
     # so it stays at the top level rather than under /api/.

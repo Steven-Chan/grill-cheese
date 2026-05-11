@@ -63,6 +63,9 @@ export function SessionProvider({ sid, children }: Props) {
             startedAt: ev.payload.started_at,
           });
           break;
+        case "session_meta":
+          d({ type: "session_meta", cmux: ev.payload.cmux ?? null });
+          break;
         case "session_ended":
           d({ type: "session_ended", summary: ev.payload.summary });
           break;

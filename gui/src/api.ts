@@ -77,6 +77,27 @@ export async function deleteSession(sid: string): Promise<void> {
   }
 }
 
+// Focus the cmux pane that hosts this CC session. Server shells the cmux
+// CLI; 409 when the session has no cmux coords (CC wasn't launched inside
+// cmux); 502 when the CLI itself fails.
+export async function postJumpToCmux(session_id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${session_id}/jump-to-cmux`, {
+    method: "POST",
+  });
+  if (res.status >= 400 && res.status < 500) {
+    let payload: { err?: string } = {};
+    try {
+      payload = await res.json();
+    } catch {
+      // ignore
+    }
+    const rej: ActionRejection = { status: res.status, err: payload.err };
+    throw rej;
+  }
+  if (!res.ok) throw new Error(`jump-to-cmux failed: ${res.status}`);
+}
+
+
 // Toolbar Wrap-up signal. Session-level: no node bound. Server emits
 // session_wrap SSE; skill responds with present_summary. Throws
 // ActionRejection on 4xx for consistent toast handling.

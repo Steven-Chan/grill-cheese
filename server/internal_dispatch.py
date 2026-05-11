@@ -13,11 +13,18 @@ from __future__ import annotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+import json
+import logging
+
 from . import mcp_app
+from .schemas import CmuxInfo
 from .state import store
 from .telemetry import log_next_call, log_notify
 
+logger = logging.getLogger(__name__)
+
 OWNER_HEADER = "X-Grill-Owner"
+CMUX_HEADER = "X-Grill-Cmux"
 
 
 # Whitelisted tool names — must match @mcp.tool() registrations in mcp_app.py
@@ -61,6 +68,15 @@ async def internal_tool_endpoint(request: Request) -> Response:
         new_sid = result.get("session_id")
         if owner and isinstance(new_sid, str) and new_sid:
             await store.set_session_owner(new_sid, owner)
+        # cmux coords (workspace/panel/socket/bin) — best-effort, malformed
+        # header must not block session creation.
+        cmux_raw = request.headers.get(CMUX_HEADER)
+        if cmux_raw and isinstance(new_sid, str) and new_sid:
+            try:
+                cmux = CmuxInfo.model_validate(json.loads(cmux_raw))
+                await store.set_session_cmux(new_sid, cmux)
+            except Exception as e:
+                logger.warning("bad %s header: %s", CMUX_HEADER, e)
     return JSONResponse(result if result is not None else {})
 
 
