@@ -86,7 +86,9 @@ function DecisionCard({
   };
 
   const canSubmit = picked.size > 0 || note.trim().length > 0;
-  const locked = !!node.committed;
+  // chat-resolve sets chosen_branch_ids server-side without flipping `committed`
+  // in our reducer, so treat any "already-answered" node as locked too.
+  const locked = !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
   const send = async (action: ActionKind, opts?: { skipPicks?: boolean }) => {
     if (busy) return;
@@ -213,7 +215,7 @@ function SummaryCard({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const docsBlocked = !!node.generate_docs;
-  const locked = !!node.committed;
+  const locked = !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
   const send = async (action: ActionKind) => {
     if (busy) return;

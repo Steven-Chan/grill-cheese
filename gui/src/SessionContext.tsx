@@ -81,9 +81,6 @@ export function SessionProvider({ sid, children }: Props) {
         case "node_updated":
           d({ type: "node_updated", node: ev.payload as DecisionNode });
           break;
-        case "node_resolved":
-          d({ type: "node_resolved", node_id: ev.payload.node_id });
-          break;
         case "node_committed": {
           const last = ev.payload.actions?.[ev.payload.actions.length - 1];
           d({ type: "node_committed", node_id: ev.payload.node_id, action: last?.action ?? null });

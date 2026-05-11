@@ -26,7 +26,6 @@ export type SessionAction =
   | { type: "session_resumed" }
   | { type: "node_added"; node: DecisionNode }
   | { type: "node_updated"; node: DecisionNode }
-  | { type: "node_resolved"; node_id: string }
   | { type: "node_committed"; node_id: string; action: string | null };
 
 export interface Snapshot {
@@ -69,13 +68,18 @@ function orderNodes(nodes: Record<string, DecisionNode>): string[] {
     .map((n) => n.id);
 }
 
-// Pending = last decision/summary node that isn't committed and isn't redirected.
+// Pending = last decision/summary node that isn't committed, isn't redirected,
+// isn't implicit (silent record-only), and hasn't already had a pick land.
+// chosen_branch_ids.length>0 catches chat-resolve (server synthesises a chosen
+// branch and unlocks the node, so `committed` doesn't flip in our state).
 function findPending(state: Pick<SessionState, "nodes" | "nodeOrder">): string | null {
   for (let i = state.nodeOrder.length - 1; i >= 0; i--) {
     const n = state.nodes[state.nodeOrder[i]];
     if (!n) continue;
     if (n.redirected) continue;
+    if (n.implicit) continue;
     if (n.committed) continue;
+    if ((n.chosen_branch_ids ?? []).length > 0) continue;
     return n.id;
   }
   return null;
@@ -133,10 +137,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const next = { ...state, nodes };
       next.pendingNodeId = findPending(next);
       return next;
-    }
-    case "node_resolved": {
-      // server-side resolution (e.g. chat outcome). pendingNodeId recomputed.
-      return { ...state, pendingNodeId: findPending(state) };
     }
     case "node_committed": {
       const n = state.nodes[action.node_id];
