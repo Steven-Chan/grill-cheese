@@ -28,6 +28,7 @@ export function openSse(sessionId: string | null, onEvent: (ev: SseEvent) => voi
     "session_deleted",
     "session_paused",
     "session_resumed",
+    "session_wrap",
     "node_added",
     "node_updated",
     "node_committed",

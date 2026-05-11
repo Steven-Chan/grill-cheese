@@ -16,6 +16,9 @@ export interface SessionState {
   // insertion order — drives linear feed render
   nodeOrder: string[];
   pendingNodeId: string | null;
+  // toolbar Wrap-up fired; awaiting skill's present_summary push. Cleared
+  // on session_ended / continue_grill / fresh session_started.
+  wrapping: boolean;
 }
 
 export type SessionAction =
@@ -24,6 +27,7 @@ export type SessionAction =
   | { type: "session_ended"; summary: string }
   | { type: "session_paused"; paused: PausedState }
   | { type: "session_resumed" }
+  | { type: "session_wrap" }
   | { type: "node_added"; node: DecisionNode }
   | { type: "node_updated"; node: DecisionNode }
   | { type: "node_committed"; node_id: string; action: string | null };
@@ -37,6 +41,9 @@ export interface Snapshot {
   status: SessionStatus;
   paused_node_id: string | null;
   paused_branch_id: string | null;
+  // null when not wrapping; "__wrap_pending__" sentinel between wrap click
+  // and the skill's first present_summary; real node id thereafter.
+  wrap_summary_node_id: string | null;
   nodes: Record<string, DecisionNode>;
   // server returns root_node_id + nodes; we derive order via BFS from root + insertion fallback
   root_node_id: string | null;
@@ -56,6 +63,7 @@ export function initialSessionState(sid: string): SessionState {
     nodes: {},
     nodeOrder: [],
     pendingNodeId: null,
+    wrapping: false,
   };
 }
 
@@ -128,6 +136,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
           : null,
         nodes,
         nodeOrder: order,
+        wrapping: snap.wrap_summary_node_id != null,
       };
       next.pendingNodeId = findPending(next);
       return next;
@@ -143,11 +152,13 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         status: "active",
       };
     case "session_ended":
-      return { ...state, endedSummary: action.summary, status: "ended", pendingNodeId: null, paused: null };
+      return { ...state, endedSummary: action.summary, status: "ended", pendingNodeId: null, paused: null, wrapping: false };
     case "session_paused":
       return { ...state, status: "paused", paused: action.paused };
     case "session_resumed":
       return { ...state, status: "active", paused: null };
+    case "session_wrap":
+      return { ...state, wrapping: true };
     case "node_added": {
       const merged = mirrorCommitted(action.node, state.nodes[action.node.id]);
       const nodes = { ...state.nodes, [action.node.id]: merged };
@@ -174,7 +185,11 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         committed_action: action.action ?? n.committed_action ?? null,
       };
       const nodes = { ...state.nodes, [action.node_id]: updated };
-      const next = { ...state, nodes };
+      // continue_grill verdict un-wraps the session (server clears
+      // wrap_summary_node_id). Mirror that flip locally so the toolbar
+      // button + any wrap-conditional UI returns to its idle state.
+      const wrapping = action.action === "continue_grill" ? false : state.wrapping;
+      const next = { ...state, nodes, wrapping };
       next.pendingNodeId = findPending(next);
       return next;
     }

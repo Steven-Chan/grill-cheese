@@ -2,7 +2,6 @@ import type { SessionMeta } from "./types";
 
 export type ActionKind =
   | "next"
-  | "stop"
   | "chat"
   | "stop_here"
   | "create_plan"
@@ -76,4 +75,25 @@ export async function deleteSession(sid: string): Promise<void> {
   if (!res.ok) {
     throw new Error(`delete failed: ${res.status}`);
   }
+}
+
+// Toolbar Wrap-up signal. Session-level: no node bound. Server emits
+// session_wrap SSE; skill responds with present_summary. Throws
+// ActionRejection on 4xx for consistent toast handling.
+export async function postWrap(session_id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${session_id}/wrap`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  });
+  if (res.status >= 400 && res.status < 500) {
+    let payload: { err?: string } = {};
+    try {
+      payload = await res.json();
+    } catch {
+      // ignore parse failure
+    }
+    const rej: ActionRejection = { status: res.status, err: payload.err };
+    throw rej;
+  }
+  if (!res.ok) throw new Error(`wrap failed: ${res.status}`);
 }

@@ -75,6 +75,9 @@ export function SessionProvider({ sid, children }: Props) {
         case "session_resumed":
           d({ type: "session_resumed" });
           break;
+        case "session_wrap":
+          d({ type: "session_wrap" });
+          break;
         case "node_added":
           d({ type: "node_added", node: ev.payload as DecisionNode });
           break;

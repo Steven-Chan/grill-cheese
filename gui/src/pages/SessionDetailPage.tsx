@@ -5,7 +5,7 @@ import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
 import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
-import { exportMarkdownUrl, postAction, type ActionRejection } from "../api";
+import { exportMarkdownUrl, postWrap, type ActionRejection } from "../api";
 
 export function SessionDetailPage() {
   const { sid } = useParams<{ sid: string }>();
@@ -37,16 +37,16 @@ function DetailShell() {
     return () => window.clearTimeout(t);
   }, [toast]);
 
-  const showWrapUp = state.loaded && state.status !== "ended" && state.nodeOrder.length > 0;
+  const showWrapUp =
+    state.loaded && state.status !== "ended" && state.nodeOrder.length > 0 && !state.wrapping;
 
-  // wrap-up targets the latest node — covers the idle case (no pending) too
+  // Session-level wrap-up — no node id. Server emits session_wrap; skill
+  // wakes and pushes the summary card.
   const onWrapUp = async () => {
     if (wrappingUp) return;
-    const target = state.nodeOrder[state.nodeOrder.length - 1];
-    if (!target) return;
     setWrappingUp(true);
     try {
-      await postAction(state.sid, target, "stop");
+      await postWrap(state.sid);
     } catch (e) {
       const rej = e as ActionRejection;
       if (rej && typeof rej.status === "number") {

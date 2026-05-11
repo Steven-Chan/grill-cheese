@@ -100,6 +100,7 @@ export type SseEvent =
   | { type: "session_deleted"; session_id: string; payload: { project: string } }
   | { type: "session_paused"; session_id: string; payload: { node_id: string; branch_id: string | null } }
   | { type: "session_resumed"; session_id: string; payload: Record<string, unknown> }
+  | { type: "session_wrap"; session_id: string; payload: Record<string, unknown> }
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
   | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }>; generate_docs?: boolean; docs_reason?: string | null } }
