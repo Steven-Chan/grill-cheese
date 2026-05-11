@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/sessioncontext.tsx","./src/api.ts","./src/main.tsx","./src/sse.ts","./src/state.ts","./src/types.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/sessioncontext.tsx","./src/api.ts","./src/main.tsx","./src/sse.ts","./src/state.ts","./src/types.ts","./src/pages/sessiondetailpage.tsx","./src/pages/sessionlistpage.tsx"],"version":"5.9.3"}
