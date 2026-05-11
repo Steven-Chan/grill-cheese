@@ -22,6 +22,14 @@ function DetailShell() {
   const [toast, setToast] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [wrappingUp, setWrappingUp] = useState(false);
+  // null = follow live pending. set = pinned to a specific past node in BigCard slot.
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  // clear the pin if the session ends (EndedHistoryView takes over) or the node vanishes
+  useEffect(() => {
+    if (!selectedNodeId) return;
+    if (state.status === "ended" || !state.nodes[selectedNodeId]) setSelectedNodeId(null);
+  }, [selectedNodeId, state.nodes, state.status]);
 
   useEffect(() => {
     if (!toast) return;
@@ -68,7 +76,7 @@ function DetailShell() {
                 title={sidebarOpen ? "Hide history" : "Show history"}
                 aria-pressed={sidebarOpen}
               >
-                {sidebarOpen ? "◧" : "◨"} history ({Math.max(0, state.nodeOrder.length - (state.pendingNodeId ? 1 : 0))})
+                {sidebarOpen ? "◧" : "◨"} history ({state.nodeOrder.length})
               </button>
             )}
             <HeaderMenu
@@ -91,7 +99,12 @@ function DetailShell() {
         ) : state.status === "ended" ? (
           <EndedHistoryView />
         ) : (
-          <ActiveLayout onToast={setToast} sidebarOpen={sidebarOpen} />
+          <ActiveLayout
+            onToast={setToast}
+            sidebarOpen={sidebarOpen}
+            selectedNodeId={selectedNodeId}
+            onSelect={setSelectedNodeId}
+          />
         )}
       </main>
       {toast && (
@@ -185,18 +198,26 @@ function HeaderMenu({
 function ActiveLayout({
   onToast,
   sidebarOpen,
+  selectedNodeId,
+  onSelect,
 }: {
   onToast: (msg: string) => void;
   sidebarOpen: boolean;
+  selectedNodeId: string | null;
+  onSelect: (id: string | null) => void;
 }) {
   return (
     <div className={`gc-active${sidebarOpen ? " with-sidebar" : ""}`}>
       <div className="gc-active-card">
-        <BigCard onToast={onToast} />
+        <BigCard
+          onToast={onToast}
+          selectedNodeId={selectedNodeId}
+          onClearSelection={() => onSelect(null)}
+        />
       </div>
       {sidebarOpen && (
         <aside className="gc-active-sidebar">
-          <SidebarHistory open={sidebarOpen} />
+          <SidebarHistory open={sidebarOpen} selectedNodeId={selectedNodeId} onSelect={onSelect} />
         </aside>
       )}
     </div>

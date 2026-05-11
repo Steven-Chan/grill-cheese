@@ -3,24 +3,64 @@ import ReactMarkdown from "react-markdown";
 import { postAction, type ActionKind, type ActionRejection } from "../api";
 import { useSession } from "../SessionContext";
 import type { DecisionNode } from "../types";
+import { HistoryEntry } from "./HistoryEntry";
 
 interface Props {
   onToast: (msg: string) => void;
+  selectedNodeId: string | null;
+  onClearSelection: () => void;
 }
 
-export function BigCard({ onToast }: Props) {
+export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
   const { state } = useSession();
-  if (!state.pendingNodeId) {
+
+  // if pinned to a past node AND it's not the current pending, render read-only view
+  if (selectedNodeId && selectedNodeId !== state.pendingNodeId) {
+    const pinned = state.nodes[selectedNodeId];
+    if (!pinned) return null;
+    return (
+      <div className="gc-bigcard-pastview">
+        <button
+          type="button"
+          className="gc-btn gc-btn-toolbar gc-pastview-back"
+          onClick={onClearSelection}
+        >
+          ← back to current question
+        </button>
+        <HistoryEntry node={pinned} expanded />
+      </div>
+    );
+  }
+
+  // when there's no live pending question, keep the most recent card on screen
+  // (force-locked) so the view doesn't flash to a placeholder between submit
+  // and the next node arriving over SSE. Skip implicit (silent record-only)
+  // and redirected (settled-via-chat) nodes — neither should resurface as
+  // the visible card.
+  let pendingId = state.pendingNodeId;
+  const fromFallback = !pendingId;
+  if (!pendingId) {
+    for (let i = state.nodeOrder.length - 1; i >= 0; i--) {
+      const id = state.nodeOrder[i];
+      const n = state.nodes[id];
+      if (!n) continue;
+      if (n.implicit) continue;
+      if (n.redirected) continue;
+      pendingId = id;
+      break;
+    }
+  }
+  if (!pendingId) {
     return (
       <div className="gc-bigcard gc-bigcard-idle">
         <p className="gc-dim">waiting for the next question…</p>
       </div>
     );
   }
-  const node = state.nodes[state.pendingNodeId];
+  const node = state.nodes[pendingId];
   if (!node) return null;
   return node.kind === "summary" ? (
-    <SummaryCard key={node.id} node={node} sid={state.sid} onToast={onToast} />
+    <SummaryCard key={node.id} node={node} sid={state.sid} onToast={onToast} forceLocked={fromFallback} />
   ) : (
     <DecisionCard
       key={node.id}
@@ -28,22 +68,29 @@ export function BigCard({ onToast }: Props) {
       sid={state.sid}
       onToast={onToast}
       paused={state.status === "paused"}
+      forceLocked={fromFallback}
     />
   );
 }
 
 // ---------- decision card ----------
 
+// sentinel id for the single-mode "Other" radio. Never sent to server — when
+// picked, branch_ids = [] and the note becomes the user-authored answer.
+const OTHER_PICK = "__other__";
+
 function DecisionCard({
   node,
   sid,
   onToast,
   paused,
+  forceLocked,
 }: {
   node: DecisionNode;
   sid: string;
   onToast: (msg: string) => void;
   paused: boolean;
+  forceLocked?: boolean;
 }) {
   const multi = !!node.multi_select;
   const removed = useMemo(() => new Set(node.removed_branch_ids ?? []), [node.removed_branch_ids]);
@@ -85,17 +132,30 @@ function DecisionCard({
     }
   };
 
-  const canSubmit = picked.size > 0 || note.trim().length > 0;
+  // single-mode: "Other" radio routes the typed note as the answer
+  const otherPicked = !multi && picked.has(OTHER_PICK);
+  const noteEnabled = multi || otherPicked;
+  const canSubmit = multi
+    ? picked.size > 0 || note.trim().length > 0
+    : otherPicked
+      ? note.trim().length > 0
+      : picked.size > 0;
   // chat-resolve sets chosen_branch_ids server-side without flipping `committed`
   // in our reducer, so treat any "already-answered" node as locked too.
-  const locked = !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
+  // forceLocked covers the fallback-render case (no live pending, view kept on
+  // last card) where local committed/chosen state may not have caught up yet
+  // with the SSE event for the just-submitted action.
+  const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
   const send = async (action: ActionKind, opts?: { skipPicks?: boolean }) => {
     if (busy) return;
     setBusy(action);
     try {
+      const branch_ids = opts?.skipPicks
+        ? []
+        : Array.from(picked).filter((id) => id !== OTHER_PICK);
       await postAction(sid, node.id, action, {
-        branch_ids: opts?.skipPicks ? [] : Array.from(picked),
+        branch_ids,
         note: note.trim() || undefined,
       });
     } catch (e) {
@@ -144,15 +204,37 @@ function DecisionCard({
             </li>
           );
         })}
+        {!multi && (
+          <li className={`gc-branch gc-branch-other${otherPicked ? " checked" : ""}`}>
+            <label>
+              <input
+                type="radio"
+                name={`branch-${node.id}`}
+                checked={otherPicked}
+                disabled={locked}
+                onChange={() => togglePick(OTHER_PICK)}
+              />
+              <span className="gc-branch-text">
+                <span className="gc-branch-label">Other — type your own answer</span>
+              </span>
+            </label>
+          </li>
+        )}
       </ul>
 
       <div className="gc-bigcard-note">
         <textarea
           rows={2}
-          placeholder="or type your own answer / redirect…"
+          placeholder={
+            multi
+              ? "or type your own answer / redirect…"
+              : otherPicked
+                ? "type your answer / redirect…"
+                : "pick \"Other\" above to type your own answer"
+          }
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          disabled={locked}
+          disabled={locked || !noteEnabled}
         />
       </div>
 
@@ -183,7 +265,7 @@ function DecisionCard({
           <strong>paused</strong> — chatting in Claude Code about this question.
         </div>
       )}
-      {locked && !paused && (
+      {!!node.committed && !paused && (
         <div className="gc-bigcard-locked-banner gc-dim">
           settled — waiting for the next question…
         </div>
@@ -198,15 +280,17 @@ function SummaryCard({
   node,
   sid,
   onToast,
+  forceLocked,
 }: {
   node: DecisionNode;
   sid: string;
   onToast: (msg: string) => void;
+  forceLocked?: boolean;
 }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const docsBlocked = !!node.generate_docs;
-  const locked = !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
+  const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
   const send = async (action: ActionKind) => {
     if (busy) return;
