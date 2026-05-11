@@ -248,7 +248,13 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 }
 .gc-bigcard.locked { opacity: 0.7; }
 .gc-bigcard.paused { border-color: rgba(232, 142, 93, 0.5); }
-.gc-bigcard-idle { text-align: center; padding: 48px; }
+.gc-bigcard-idle { text-align: center; padding: 48px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.gc-fire {
+  image-rendering: -moz-crisp-edges;
+  image-rendering: -webkit-crisp-edges;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
 
 .gc-bigcard-head { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
 
@@ -312,7 +318,10 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-bigcard-locked-banner {
   margin-top: 16px;
   font-size: 12px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
 }
 
 /* ---------- summary card ---------- */

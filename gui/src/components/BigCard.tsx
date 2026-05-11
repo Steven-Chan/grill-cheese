@@ -4,6 +4,7 @@ import { postAction, type ActionKind, type ActionRejection } from "../api";
 import { useSession } from "../SessionContext";
 import type { DecisionNode } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
+import { FireAnimation } from "./FireAnimation";
 
 interface Props {
   onToast: (msg: string) => void;
@@ -53,6 +54,7 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
   if (!pendingId) {
     return (
       <div className="gc-bigcard gc-bigcard-idle">
+        <FireAnimation size={80} />
         <p className="gc-dim">waiting for the next question…</p>
       </div>
     );
@@ -267,7 +269,8 @@ function DecisionCard({
       )}
       {!!node.committed && !paused && (
         <div className="gc-bigcard-locked-banner gc-dim">
-          settled — waiting for the next question…
+          <FireAnimation size={16} style={{ height: 24, paddingBottom: 8 }} />
+          <span>settled — waiting for the next question…</span>
         </div>
       )}
     </article>
@@ -368,6 +371,12 @@ function SummaryCard({
           Continue grilling
         </button>
       </div>
+      {locked && (
+        <div className="gc-bigcard-locked-banner gc-dim">
+          <FireAnimation size={16} style={{ height: 24, paddingBottom: 8 }} />
+          <span>settled.</span>
+        </div>
+      )}
     </article>
   );
 }
