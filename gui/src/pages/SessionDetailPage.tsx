@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
+import { BigCard } from "../components/BigCard";
 import { EndedHistoryView } from "./EndedHistoryView";
 import { exportMarkdownUrl } from "../api";
 
@@ -16,6 +18,14 @@ export function SessionDetailPage() {
 
 function DetailShell() {
   const { state } = useSession();
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = window.setTimeout(() => setToast(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [toast]);
+
   return (
     <div className="gc-page gc-detail-page">
       <header className="gc-detail-header">
@@ -40,24 +50,38 @@ function DetailShell() {
         ) : state.status === "ended" ? (
           <EndedHistoryView />
         ) : (
-          <ActiveViewPlaceholder />
+          <ActiveLayout onToast={setToast} />
         )}
       </main>
+      {toast && (
+        <div className="gc-toast" role="status">
+          <span>{toast}</span>
+          <button className="gc-toast-x" aria-label="dismiss" onClick={() => setToast(null)}>
+            ×
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function ActiveViewPlaceholder() {
-  const { state } = useSession();
+function ActiveLayout({ onToast }: { onToast: (msg: string) => void }) {
   return (
-    <div className="gc-active-placeholder">
-      <p className="gc-dim">
-        Active session view — BigCard + SidebarHistory land in next phases.
-      </p>
-      <p className="gc-dim">
-        pendingNodeId: <code>{state.pendingNodeId ?? "(none)"}</code> · nodes:{" "}
-        <code>{state.nodeOrder.length}</code>
-      </p>
+    <div className="gc-active">
+      <div className="gc-active-card">
+        <BigCard onToast={onToast} />
+      </div>
+      <aside className="gc-active-sidebar">
+        <SidebarPlaceholder />
+      </aside>
+    </div>
+  );
+}
+
+function SidebarPlaceholder() {
+  return (
+    <div className="gc-sidebar gc-sidebar-placeholder">
+      <p className="gc-dim">SidebarHistory lands in Phase 7.</p>
     </div>
   );
 }
