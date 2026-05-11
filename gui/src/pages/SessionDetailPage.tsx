@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
+import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
 import { exportMarkdownUrl } from "../api";
 
@@ -72,16 +73,8 @@ function ActiveLayout({ onToast }: { onToast: (msg: string) => void }) {
         <BigCard onToast={onToast} />
       </div>
       <aside className="gc-active-sidebar">
-        <SidebarPlaceholder />
+        <SidebarHistory />
       </aside>
-    </div>
-  );
-}
-
-function SidebarPlaceholder() {
-  return (
-    <div className="gc-sidebar gc-sidebar-placeholder">
-      <p className="gc-dim">SidebarHistory lands in Phase 7.</p>
     </div>
   );
 }
