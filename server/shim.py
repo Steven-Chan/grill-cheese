@@ -137,10 +137,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[t.TextContent]
 # ---- SSE -> channel notification bridge --------------------------------
 
 _session_holder: dict[str, ServerSession | None] = {"session": None}
-# Buffer for node_committed events that arrive before the stdio session is
-# ready (fresh shim subscribing while the SSE ring buffer replays prior
-# committed events). Drained as soon as session is set.
-_pending_emits: list[dict[str, Any]] = []
+# Buffer for SSE events that arrive before the stdio session is ready (fresh
+# shim subscribing while the SSE ring buffer replays prior events). Drained
+# as soon as session is set. Tagged with the SSE event name so we route to
+# the right channel emitter.
+_pending_emits: list[tuple[str, dict[str, Any]]] = []
 
 
 async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> None:
@@ -205,8 +206,37 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
             pass
 
 
+async def _emit_wrap_channel(session: ServerSession, event_data: dict[str, Any]) -> None:
+    """Map an SSE session_wrap envelope to a notifications/claude/channel.
+
+    Payload shape is {type:"session_wrap", session_id}. No node, no seq —
+    the skill recognises session_wrap by `type` and responds by composing
+    a summary recap + calling present_summary.
+    """
+    session_id = event_data.get("session_id") or ""
+    body: dict[str, Any] = {"type": "session_wrap", "session_id": session_id}
+    meta = {"session_id": str(session_id), "kind": "session_wrap"}
+    try:
+        jr = JSONRPCNotification(
+            jsonrpc="2.0",
+            method="notifications/claude/channel",
+            params={"content": json.dumps(body), "meta": meta},
+        )
+        await session.send_message(SessionMessage(message=JSONRPCMessage(jr)))
+        _log(f"emitted session_wrap channel session={session_id}")
+    except Exception as e:
+        _log(f"wrap channel emit err: {type(e).__name__}: {e}")
+
+
+async def _dispatch_emit(session: ServerSession, event_name: str, data: dict[str, Any]) -> None:
+    if event_name == "node_committed":
+        await _emit_channel(session, data)
+    elif event_name == "session_wrap":
+        await _emit_wrap_channel(session, data)
+
+
 async def _sse_subscriber() -> None:
-    """Long-lived task that subscribes to /events and bridges committed events.
+    """Long-lived task that subscribes to /events and bridges relevant events.
 
     Subscribes with ?owner=<OWNER_ID> so this shim only receives events for
     sessions it created. Without this, every parallel CC instance would
@@ -214,6 +244,7 @@ async def _sse_subscriber() -> None:
     """
     backoff = 1.0
     sse_path = f"/events?owner={OWNER_ID}"
+    bridged = {"node_committed", "session_wrap"}
     while True:
         try:
             async with httpx.AsyncClient(base_url=BASE_URL, timeout=None) as c:
@@ -221,7 +252,7 @@ async def _sse_subscriber() -> None:
                     _log("SSE connected")
                     backoff = 1.0
                     async for sse in event_source.aiter_sse():
-                        if sse.event != "node_committed":
+                        if sse.event not in bridged:
                             continue
                         try:
                             data = json.loads(sse.data)
@@ -229,11 +260,10 @@ async def _sse_subscriber() -> None:
                             continue
                         sess = _session_holder["session"]
                         if sess is None:
-                            # buffer until session is ready (will be drained on session start)
-                            _pending_emits.append(data)
-                            _log(f"buffered node_committed (session not ready); pending={len(_pending_emits)}")
+                            _pending_emits.append((sse.event, data))
+                            _log(f"buffered {sse.event} (session not ready); pending={len(_pending_emits)}")
                             continue
-                        await _emit_channel(sess, data)
+                        await _dispatch_emit(sess, sse.event, data)
         except Exception as e:
             _log(f"SSE loop err: {type(e).__name__}: {e}; reconnect in {backoff:.1f}s")
             await asyncio.sleep(backoff)
@@ -269,8 +299,8 @@ async def main() -> None:
             _session_holder["session"] = session
             # Drain anything the SSE bridge buffered while session was None
             # (e.g. ring-buffer replay on subscribe before this point).
-            for buf in list(_pending_emits):
-                await _emit_channel(session, buf)
+            for ev_name, buf in list(_pending_emits):
+                await _dispatch_emit(session, ev_name, buf)
             _pending_emits.clear()
             # Start the SSE subscriber AFTER session is set so its first
             # delivery doesn't race the holder write. Buffering above is
