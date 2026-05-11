@@ -102,7 +102,7 @@ Drives two deferred decisions:
 - prompt cache TTL diagnostics (long gaps between `notify` events = blown 5min cache window)
 
 ### Frontend layout
-GUI is `gui/`: React 18 + xyflow + dagre + zustand. Canvas renders the full decision tree. State in `gui/src/store.ts`; SSE wiring in `gui/src/sse.ts`; layout math in `gui/src/layout.ts`. `node_committed` payload now carries a `seq` field — keep `gui/src/types.ts` in sync.
+GUI is `gui/`: React 18 + react-router-dom + react-markdown. No xyflow/dagre/zustand — single-card UI, not a tree canvas. Per-session state lives in `gui/src/SessionContext.tsx` (Context + `useReducer`) with reducer logic in `gui/src/state.ts`; list-page state uses a sibling `useReducer` in `gui/src/pages/SessionListPage.tsx`. SSE wiring in `gui/src/sse.ts`; types in `gui/src/types.ts`. The active question renders via `gui/src/components/BigCard.tsx`, with `SidebarHistory` for prior nodes and `FireAnimation` for the brand chrome. `node_committed` payload carries a `seq` field — keep `types.ts` in sync.
 
 ## When editing
 
