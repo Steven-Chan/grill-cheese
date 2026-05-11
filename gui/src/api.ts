@@ -38,7 +38,7 @@ export async function postAction(
     branch_id: opts?.branch_id,
     note: opts?.note,
   };
-  const res = await fetch("/actions", {
+  const res = await fetch("/api/actions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -57,12 +57,12 @@ export async function postAction(
 }
 
 export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {
-  const r = await fetch("/sessions");
+  const r = await fetch("/api/sessions");
   return r.json();
 }
 
 export async function getSnapshot(sid: string) {
-  const r = await fetch(`/snapshot/${sid}`);
+  const r = await fetch(`/api/snapshot/${sid}`);
   if (!r.ok) throw new Error(`snapshot ${sid} failed: ${r.status}`);
   return r.json();
 }
@@ -72,7 +72,7 @@ export function exportMarkdownUrl(sid: string): string {
 }
 
 export async function deleteSession(sid: string): Promise<void> {
-  const res = await fetch(`/sessions/${sid}`, { method: "DELETE" });
+  const res = await fetch(`/api/sessions/${sid}`, { method: "DELETE" });
   if (!res.ok) {
     throw new Error(`delete failed: ${res.status}`);
   }

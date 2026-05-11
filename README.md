@@ -14,18 +14,18 @@ Claude Code ──stdio MCP── server/shim.py
                   server/server.py (uvicorn :7878)
                   ├── /internal/tool/{name}   present_branches, present_summary, ...
                   ├── /hooks                  CC PreToolUse / PostToolUse telemetry
-                  ├── /actions                GUI clicks
+                  ├── /api/actions            GUI clicks
                   ├── /events                 SSE stream
-                  ├── /sessions               list active sessions
-                  ├── /snapshot/<sid>         JSON snapshot of a session
+                  ├── /api/sessions           list active sessions
+                  ├── /api/snapshot/<sid>     JSON snapshot of a session
                   ├── /export/<sid>.md        markdown export
-                  └── /                       xyflow GUI (browser)
+                  └── /  (+ /sessions/<sid>)  React SPA (BrowserRouter)
 ```
 
 - **Two processes.** `server/server.py` is the long-lived HTTP server (GUI, SSE, hooks, action endpoint, JSON dispatch). `server/shim.py` is the stdio MCP subprocess Claude Code spawns; it forwards tool calls to `/internal/tool/{name}` and bridges committed actions back via `notifications/claude/channel` (CC's Channels feature is stdio-only).
 - **MCP** is the spine. `present_branches(question, branches[], multi_select?)` returns immediately with a `node_id`. The user picks one branch (`action=next` with `branch_ids: [b]`), checks several in multi-mode (`branch_ids: [b1,b2,...]`), types free text (server synthesizes a `user_authored` Branch via `next + note`), pauses to chat (`action=chat`), or wraps up (`action=stop`). No long-poll — channels deliver actions push-style.
 - **Hooks** are ambient: every `PreToolUse` / `PostToolUse` from Claude is POSTed to `/hooks` and rendered next to the live decision node so you see when Claude grepped vs hallucinated.
-- **GUI** is React + xyflow + dagre. Pail-aware: dim stale subtrees, branch states (considered / chosen / removed-via-chat), typed answers materialise as `user_authored` branches on the node, implicit-decision lane.
+- **GUI** is a React SPA (react-router-dom). Session list at `/sessions`, per-session detail at `/sessions/<sid>` — active sessions render a focused BigCard with the pending question + a collapsible sidebar of history; ended sessions render a full linear feed. Branch states (considered / chosen / removed-via-chat), typed answers as `user_authored` branches, redirected nodes greyed, implicit decisions chipped.
 
 ## Install
 
@@ -70,7 +70,7 @@ Open `http://127.0.0.1:7878/` in a browser. Decisions appear as Claude generates
 
 ## Exports
 
-- JSON: `GET /snapshot/<session_id>`
+- JSON: `GET /api/snapshot/<session_id>`
 - Markdown: `GET /export/<session_id>.md`
 
 ## Dev
@@ -84,7 +84,7 @@ uv run python -m server.server
 cd gui && npm run dev   # http://127.0.0.1:5173
 ```
 
-Vite proxies `/events`, `/actions`, `/sessions`, `/snapshot`, `/export` to the server. (`/internal/tool/{name}` is shim→server only; not GUI-bound.)
+Vite proxies `/events`, `/api`, `/export` to the server. (`/internal/tool/{name}` is shim→server only; not GUI-bound.)
 
 ## Branch states
 

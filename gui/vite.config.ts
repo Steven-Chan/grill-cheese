@@ -7,9 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/events": { target: "http://127.0.0.1:7878", changeOrigin: true, ws: false },
-      "/actions": { target: "http://127.0.0.1:7878", changeOrigin: true },
-      "/sessions": { target: "http://127.0.0.1:7878", changeOrigin: true },
-      "/snapshot": { target: "http://127.0.0.1:7878", changeOrigin: true },
+      "/api": { target: "http://127.0.0.1:7878", changeOrigin: true },
       "/export": { target: "http://127.0.0.1:7878", changeOrigin: true },
     },
   },

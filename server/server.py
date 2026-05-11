@@ -8,8 +8,8 @@ from pathlib import Path
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import FileResponse, Response
 from starlette.routing import Mount, Route
-from starlette.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .hooks import (
@@ -69,27 +69,49 @@ _mcp_inner = mcp.streamable_http_app()
 _mcp_router = _McpRouter(_mcp_inner)
 
 
-def _gui_routes() -> list:
+def _spa_routes() -> list:
+    """SPA fallback. Serves dist files when the request matches a real file
+    under dist/; otherwise returns dist/index.html so BrowserRouter can
+    handle the path client-side. Must be appended LAST so earlier explicit
+    routes win (e.g. /api/*, /events, /mcp/, /export/*)."""
     here = Path(__file__).resolve().parent.parent
-    dist = here / "gui" / "dist"
-    if dist.exists():
-        return [Mount("/", app=StaticFiles(directory=str(dist), html=True), name="gui")]
-    return []
+    dist = (here / "gui" / "dist").resolve()
+    if not dist.exists():
+        return []
+    index = dist / "index.html"
+
+    async def spa_handler(request):
+        rel = request.path_params.get("path", "") or ""
+        candidate = (dist / rel).resolve()
+        # path-traversal guard
+        try:
+            candidate.relative_to(dist)
+        except ValueError:
+            return Response(status_code=404)
+        if candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(index))
+
+    return [Route("/{path:path}", spa_handler, methods=["GET"])]
 
 
 routes = [
     Route("/events", events_endpoint, methods=["GET"]),
     Route("/hooks", hooks_endpoint, methods=["POST"]),
-    Route("/actions", actions_endpoint, methods=["POST"]),
-    Route("/sessions", sessions_endpoint, methods=["GET"]),
-    Route("/sessions/{sid}", delete_session_endpoint, methods=["DELETE"]),
-    Route("/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
+    # /api/* — data endpoints. Kept under a prefix so BrowserRouter can own
+    # bare paths like /sessions and /sessions/<sid> in the SPA.
+    Route("/api/actions", actions_endpoint, methods=["POST"]),
+    Route("/api/sessions", sessions_endpoint, methods=["GET"]),
+    Route("/api/sessions/{sid}", delete_session_endpoint, methods=["DELETE"]),
+    Route("/api/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
+    # /export/<sid>.md is a user-facing direct link (opened in a new tab),
+    # so it stays at the top level rather than under /api/.
     Route("/export/{sid}.md", export_md_endpoint, methods=["GET"]),
     # /internal/tool/{name} — JSON dispatch used by the stdio shim. 127.0.0.1 only.
     Route("/internal/tool/{name}", internal_tool_endpoint, methods=["POST"]),
     Route("/internal/telemetry/notify", internal_notify_endpoint, methods=["POST"]),
     Mount("/mcp/", app=_mcp_router),
-    *_gui_routes(),
+    *_spa_routes(),
 ]
 
 
