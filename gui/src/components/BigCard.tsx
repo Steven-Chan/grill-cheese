@@ -4,7 +4,6 @@ import { postAction, type ActionKind, type ActionRejection } from "../api";
 import { useSession } from "../SessionContext";
 import type { ChatMessage, DecisionNode, PendingProposal } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
-import { FireAnimation } from "./FireAnimation";
 
 // uuid for chat_id / msg_id. crypto.randomUUID() is available in all
 // browsers we target (Chrome/Edge/FF/Safari from 2022 onward) and in
@@ -61,7 +60,6 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
   if (!pendingId) {
     return (
       <div className="gc-bigcard gc-bigcard-idle">
-        <FireAnimation size={80} />
         <p className="gc-dim">waiting for the next question…</p>
       </div>
     );
@@ -274,7 +272,6 @@ function DecisionCard({
       )}
       {!!node.committed && !paused && !node.chat_open && (
         <div className="gc-bigcard-locked-banner gc-dim">
-          <FireAnimation size={16} style={{ height: 24, paddingBottom: 8 }} />
           <span>settled — waiting for the next question…</span>
         </div>
       )}
@@ -385,6 +382,9 @@ function ChatPanel({
           ×
         </button>
       </header>
+      {proposal && (
+        <ProposalBanner proposal={proposal} node={node} onAccept={accept} busy={busy === "accept"} />
+      )}
       <div ref={listRef} className="gc-chat-list">
         {messages.length === 0 && (
           <p className="gc-dim gc-chat-empty">Type a message to start the chat.</p>
@@ -394,10 +394,14 @@ function ChatPanel({
             <div className="gc-chat-bubble">{m.text}</div>
           </div>
         ))}
+        {messages.length > 0 && messages[messages.length - 1].role === "user" && (
+          <div className="gc-chat-msg gc-chat-msg-assistant" aria-label="assistant typing">
+            <div className="gc-chat-bubble gc-chat-typing">
+              <span /><span /><span />
+            </div>
+          </div>
+        )}
       </div>
-      {proposal && (
-        <ProposalBanner proposal={proposal} node={node} onAccept={accept} busy={busy === "accept"} />
-      )}
       <div className="gc-chat-input">
         <textarea
           rows={2}
@@ -574,7 +578,6 @@ function SummaryCard({
       </div>
       {locked && (
         <div className="gc-bigcard-locked-banner gc-dim">
-          <FireAnimation size={16} style={{ height: 24, paddingBottom: 8 }} />
           <span>settled.</span>
         </div>
       )}

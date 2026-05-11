@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
+import { FireAnimation } from "../components/FireAnimation";
 import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
 import { exportMarkdownUrl, postJumpToCmux, postWrap, type ActionRejection } from "../api";
@@ -120,6 +121,15 @@ function DetailShell() {
         <div className="gc-detail-head-chips">
           {state.project && <span className="gc-chip gc-chip-project">{state.project}</span>}
           <span className={`gc-chip gc-status-${state.status}`}>{state.status}</span>
+          {/* flame ON when Claude is expected to push next step:
+             - no pending node (after next / chat-accept / continue_grill / pre-first-push)
+             - or wrapping (session_wrap fired, awaiting present_summary) */}
+          {state.status === "active" && (state.pendingNodeId === null || state.wrapping) && (
+            <span className="gc-head-flame gc-dim">
+              <FireAnimation size={16} />
+              <span>waiting…</span>
+            </span>
+          )}
         </div>
         <BriefBanner brief={state.brief} />
       </header>
