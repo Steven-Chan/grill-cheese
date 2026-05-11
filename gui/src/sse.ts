@@ -30,7 +30,6 @@ export function openSse(sessionId: string | null, onEvent: (ev: SseEvent) => voi
     "session_resumed",
     "node_added",
     "node_updated",
-    "node_resolved",
     "node_committed",
     "hook_event",
   ];

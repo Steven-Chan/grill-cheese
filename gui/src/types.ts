@@ -102,6 +102,5 @@ export type SseEvent =
   | { type: "session_resumed"; session_id: string; payload: Record<string, unknown> }
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
-  | { type: "node_resolved"; session_id: string; payload: { node_id: string; chosen_branch_ids?: string[]; chosen_branch_labels?: string[]; note?: string; action: string } }
   | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }>; generate_docs?: boolean; docs_reason?: string | null } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };
