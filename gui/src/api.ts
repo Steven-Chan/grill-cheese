@@ -24,6 +24,8 @@ export interface ActionOpts {
   msg_id?: string;
   // inline-chat: typed message text (action=chat_user_msg)
   text?: string;
+  // inline-chat: which staged proposal user picked (action=chat_accept)
+  proposal_id?: string;
 }
 
 export interface ActionRejection {
@@ -48,6 +50,7 @@ export async function postAction(
     chat_id: opts?.chat_id,
     msg_id: opts?.msg_id,
     text: opts?.text,
+    proposal_id: opts?.proposal_id,
   };
   const res = await fetch("/api/actions", {
     method: "POST",

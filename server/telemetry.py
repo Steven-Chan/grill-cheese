@@ -33,7 +33,6 @@ _ALLOWLISTED_AFTER_PUSH = {
     # inline-chat: chat replies fire after a chat_message channel wake, not
     # a push wake; exempt from <100ms violation flag.
     "post_chat_message",
-    "propose_chat_outcome",
 }
 
 VIOLATION_GAP_MS = 100.0

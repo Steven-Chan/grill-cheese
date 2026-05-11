@@ -74,8 +74,8 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
    </channel>
    ```
    - Means: the user typed a message in the inline-chat panel on node `n3`. Recognise by top-level `type == "chat_message"`.
-   - Reply with `post_chat_message(session_id, node_id, chat_id, msg_id=<new uuid>, text=<your reply>)` — call ONCE per assistant reply, then END TURN.
-   - When the chat has reached an answer, call `propose_chat_outcome(session_id, node_id, chat_id, outcome, summary, ops?)` to stage the outcome — the user clicks Accept in the GUI to commit. Do NOT call `apply_chat_result` from this flow; the GUI Accept button is the canonical commit path.
+   - Reply with `post_chat_message(session_id, node_id, chat_id, msg_id=<new uuid>, text=<your reply>, proposals?=[<staged outcome>, ...])` — call ONCE per assistant reply, then END TURN.
+   - When the reply IS the converging answer, pass `proposals=[{outcome, summary, ops?}, ...]` on the same call — stages the Accept picker the moment your message lands. No second round-trip. Pass a length-1 list for a single proposal; pass 2+ when you want to offer the user alternative outcomes to pick from. Do NOT call `apply_chat_result` from this flow; the GUI Accept button is the canonical commit path.
    - `seq` is on the same per-session monotonic counter as shape A. Track it the same way.
    - See **Inline chat** section below for full semantics.
 
@@ -131,7 +131,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 - **Take typed answers literally.** Synth `user_authored` branches in `chosen_branch_labels` (or `note`) carry the user's literal words. If the user types "actually let's stop and look at X instead", do that. Don't paraphrase or pick the closest pre-existing branch. The text input exists to let the user override your option set.
 - **Respect chat-removed branches.** Read `node.removed_branch_ids` from the snapshot before composing follow-up branches. Do not re-surface a branch that chat removed.
 - **Track `last_seen_seq` per session.** It comes in every `<channel>` block. If the next wake's `seq` is not exactly `last_seen_seq + 1`, fall back to `get_session_snapshot` to catch up — flushed-but-not-delivered nodes will surface as `is_flushed: true` with `committed_actions` populated.
-- **On `chat`: NEVER call `end_session`, NEVER call `apply_chat_result`, NEVER reply in CC.** Chat is inline in the GUI. Just END TURN; the channel will deliver the user's typed messages as shape-C wakes. Reply via `post_chat_message`. Stage outcome via `propose_chat_outcome`. The GUI Accept button commits server-side without involving you.
+- **On `chat`: NEVER call `end_session`, NEVER call `apply_chat_result`, NEVER reply in CC.** Chat is inline in the GUI. Just END TURN; the channel will deliver the user's typed messages as shape-C wakes. Reply via `post_chat_message`; stage one or more outcomes inline with the same call via its `proposals` arg. The GUI Accept button commits server-side without involving you.
 - **On `session_wrap` (toolbar wrap-up): NEVER call `end_session` directly.** Always call `present_summary` first — the user gets a verdict card with four options (`stop_here` / `create_plan` / `implement_now` / `continue_grill`) and the session ends only after they pick a terminal verdict (server-side, automatically).
 - **For summary verdicts (`stop_here` / `create_plan` / `implement_now`): NEVER call `end_session`.** The server has already ended the session. Calling it again is harmless but pointless. `end_session` remains only as an escape hatch for crashes / explicit bailout.
 
@@ -145,18 +145,20 @@ When calling `present_branches` for a child, pass `parent_node_id` and `parent_b
 
 ## Inline chat
 
-When the user clicks **chat** on a node, the server pauses the session, locks the node, and sets `chat_open=True`. The conversation lives in the GUI chat panel on the node card — **NOT** in CC. Channels deliver every typed user message as shape-C wakes; you reply with `post_chat_message`. When you judge the chat has reached an answer, you stage an outcome via `propose_chat_outcome`. The user clicks **Accept** in the GUI to commit (server-side, no further roundtrip).
+When the user clicks **chat** on a node, the server pauses the session, locks the node, and sets `chat_open=True`. The conversation lives in the GUI chat panel on the node card — **NOT** in CC. Channels deliver every typed user message as shape-C wakes; you reply with `post_chat_message`. When the reply itself IS the converging answer, pass the `proposals` arg (a non-empty list) on the SAME call to stage one or more outcomes inline — the Accept picker lands together with your message. Use length 1 when one outcome is clearly right; use 2+ when you want the user to choose between alternatives. The user picks one (radio) and clicks **Accept** in the GUI to commit (server-side, no further roundtrip).
 
 ### Wake sequence
 
 1. **First wake — `action == "chat"` (shape A):** the GUI opened the chat panel. The user has not typed anything yet. **END TURN.** Do NOT reply, do NOT call any tool.
 2. **Subsequent wakes — `type == "chat_message"` (shape C):** the user typed a message. The channel block carries `{session_id, node_id, chat_id, msg_id, text, seq}`.
-   - Call `post_chat_message(session_id, node_id, chat_id, msg_id=<new uuid>, text=<your reply>)` once. `chat_id` MUST match the value in the channel block — re-use it for every reply in this chat.
-   - END TURN. The next shape-C wake delivers the user's next message (or the next grill wake if the user accepted/closed).
-3. **When the chat has reached an answer:** call `propose_chat_outcome(session_id, node_id, chat_id, outcome, summary, ops?)` to stage the proposal. The GUI renders a banner with an Accept button. END TURN.
-   - There is NO Reject button. If the user keeps typing instead of accepting, you'll receive more shape-C wakes — reply normally, and call `propose_chat_outcome` again later when the chat re-converges. Each call OVERWRITES the prior staged proposal (single-slot, no stacking).
-4. **On Accept:** server commits server-side, broadcasts `node_updated` + `chat_closed`, resumes the session, AND emits a **shape D `chat_accepted` wake** (see step 4 of the main loop). The payload carries `outcome` plus `redirect_branch_id` (redirect) / `chosen_branch_id` (resolve) so you can push the next `present_branches` without a snapshot round-trip. **You MUST push immediately on this wake** — without it the GUI dead-ends on the now-locked card.
-5. **On Close (X button):** server discards the transcript + any pending proposal, unlocks the node, resumes the session. No ChatBlock is written. There is no wake event for close — if a stale chat_message somehow lands, the call will fail with `chat not open`; abandon the thread.
+   - Call `post_chat_message(session_id, node_id, chat_id, msg_id=<new uuid>, text=<your reply>, proposals?=[<staged outcome>, ...])` once. `chat_id` MUST match the value in the channel block — re-use it for every reply in this chat.
+   - **Omit `proposals`** when the reply is mid-thread (still gathering info, asking back, elaborating). **Include `proposals`** when this reply IS the converging answer — it stages the Accept picker inline with your message, no second tool call.
+   - **Length 1** vs **length 2+**: pass one proposal when you've converged on a single outcome you'd recommend. Pass 2+ when the chat genuinely admits alternative answers and you want the user to pick (e.g. two viable refines, or refine-vs-redirect). All proposals in the batch must validate together — a bad entry rejects the whole call.
+   - END TURN. The next shape-C wake delivers the user's next message (or a shape-D `chat_accepted` wake if the user accepted one of the staged proposals).
+3. **Re-staging:** if the user keeps typing instead of picking from your staged batch, you'll receive more shape-C wakes — reply normally, and pass a fresh `proposals` arg again later when the chat re-converges. Each call (with a fresh `msg_id`) with `proposals` set REPLACES the prior staged batch atomically (no stacking; the previous batch is discarded wholesale). Replies without `proposals` leave the previously staged batch intact — useful if you want to clarify a point without retracting the picker.
+4. **Errors:** if `post_chat_message` returns `proposal_err` (non-null), the message was appended but staging failed (e.g. chat closed concurrently). Re-call with a **new** `msg_id` + the same `proposals` to retry staging — re-using the same `msg_id` triggers the idempotent path and the proposals will NOT be re-staged. `err` on the top level means the whole call rejected (validation or append failure) — no message, no stage. Fix the inputs and retry.
+5. **On Accept:** server commits server-side, broadcasts `node_updated` + `chat_closed`, resumes the session, AND emits a **shape D `chat_accepted` wake** (see step 4 of the main loop). The payload carries `outcome` plus `redirect_branch_id` (redirect) / `chosen_branch_id` (resolve) so you can push the next `present_branches` without a snapshot round-trip. **You MUST push immediately on this wake** — without it the GUI dead-ends on the now-locked card.
+6. **On Close (X button):** server discards the transcript + any pending proposal, unlocks the node, resumes the session. No ChatBlock is written. There is no wake event for close — if a stale chat_message somehow lands, the call will fail with `chat not open`; abandon the thread.
 
 ### Outcomes (same three as before)
 
@@ -166,40 +168,69 @@ When the user clicks **chat** on a node, the server pauses the session, locks th
 
 ### `chat_id` discipline
 
-The `chat_id` arrives in every shape-C channel block. **Use it verbatim on every `post_chat_message` and `propose_chat_outcome` call for that chat.** Do NOT mint a new chat_id mid-thread. Re-using the chat_id is what makes `propose_chat_outcome` idempotent across overwrites (latest staging wins).
+The `chat_id` arrives in every shape-C channel block. **Use it verbatim on every `post_chat_message` call for that chat.** Do NOT mint a new chat_id mid-thread. Re-using the chat_id is what makes the inline `proposals` arg idempotent across replaces (latest stage wins). All proposals in a single batch share the same `chat_id`.
 
-`summary` (on `propose_chat_outcome`) is the 2-4 sentence narrative the user reads in the Accept banner. On commit it lands as the node's ChatBlock summary.
+Each `proposal.summary` is the 2-4 sentence narrative shown next to the radio option in the Accept picker. On commit it lands as the node's ChatBlock summary (only the picked one).
 
 ### Tool call shape
 
 ```
 # user typed: "I want to use Paddle, not Stripe — EU VAT is a dealbreaker"
+# This reply IS the converging answer — stage one proposal inline.
 post_chat_message(
   session_id="ab12cd34",
   node_id="n3",
   chat_id="abc...",                 # from the channel block
   msg_id="m_<new uuid>",
-  text="Paddle handles EU VAT automatically; Stripe makes you wire it manually via Stripe Tax. If VAT compliance is a dealbreaker, Paddle is the safer pick. Want me to swap the recommendation, or refine the option list?",
+  text="Paddle handles EU VAT automatically; Stripe makes you wire it manually via Stripe Tax. Given EU VAT is a dealbreaker, switching the recommendation to Paddle and dropping roll-your-own.",
+  proposals=[
+    {
+      "outcome": "refine",
+      "summary": "User wants Paddle for EU VAT handling; roll-your-own is out of scope.",
+      "ops": {
+        "adds": [
+          {"label": "Paddle", "rationale": "Handles VAT/sales tax automatically", "is_recommended": True}
+        ],
+        "removes": ["b_roll_own_id"]
+      }
+    }
+  ],
 )
-# END TURN. Wait for next shape-C wake.
+# END TURN. GUI shows single-option Accept banner alongside your message.
 
-# Later, user has confirmed they want Paddle and want roll-your-own dropped.
-propose_chat_outcome(
+# Multi-proposal: user hasn't fully committed; offer two viable outcomes.
+post_chat_message(
   session_id="ab12cd34",
   node_id="n3",
-  chat_id="abc...",                 # SAME id
-  outcome="refine",
-  summary="User wants Paddle for EU VAT handling; roll-your-own is out of scope.",
-  ops={
-    "adds": [
-      {"label": "Paddle", "rationale": "Handles VAT/sales tax automatically", "is_recommended": True}
-    ],
-    "removes": ["b_roll_own_id"]
-  },
+  chat_id="abc...",
+  msg_id="m_<new uuid>",
+  text="Two ways to resolve this: tighten the existing option set, or redirect to the upstream payment-processor question first. Both are defensible — pick one:",
+  proposals=[
+    {
+      "outcome": "refine",
+      "summary": "Keep current question, swap recommendation to Paddle and drop roll-your-own.",
+      "ops": {
+        "adds": [{"label": "Paddle", "rationale": "EU VAT auto", "is_recommended": True}],
+        "removes": ["b_roll_own_id"]
+      }
+    },
+    {
+      "outcome": "redirect",
+      "summary": "Step back: decide payment processor (Stripe/Paddle/roll-your-own) BEFORE compliance scope. EU VAT concern reorders the tree."
+    }
+  ],
 )
-# END TURN. GUI shows Accept banner.
-# User clicks Accept → server commits, broadcasts node_updated + chat_closed,
-# resumes session. Next wake is whatever you push (or the user clicks).
+# END TURN. GUI shows radio picker with both options + one Accept button.
+
+# Mid-thread reply (still gathering info) — omit `proposals`:
+post_chat_message(
+  session_id="ab12cd34",
+  node_id="n3",
+  chat_id="abc...",
+  msg_id="m_<new uuid>",
+  text="Worth checking: are you selling to EU consumers (B2C) or businesses (B2B)? VAT handling differs significantly.",
+)
+# END TURN. No picker yet.
 ```
 
 ### `apply_chat_result` is an escape hatch only

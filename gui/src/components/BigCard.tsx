@@ -291,32 +291,52 @@ function ChatPanel({
   onToast: (msg: string) => void;
 }) {
   const messages = node.chat_messages ?? [];
-  const proposal = node.pending_proposal ?? null;
+  const proposals = node.pending_proposals ?? [];
+  // first proposal's chat_id represents the thread; all share the same id
+  const stagedChatId = proposals[0]?.chat_id ?? null;
 
-  // chat_id: stable for this chat thread. Persist via the staged proposal
+  // chat_id: stable for this chat thread. Persist via a staged proposal
   // if one already exists (so Accept maps to the same chat_id Claude staged).
   // Otherwise generate once and keep in a ref for the panel lifetime.
   const chatIdRef = useRef<string | null>(null);
   if (chatIdRef.current === null) {
-    chatIdRef.current = proposal?.chat_id ?? uuid();
+    chatIdRef.current = stagedChatId ?? uuid();
   }
-  // re-sync chat_id when a proposal lands carrying a different one (e.g.
-  // a chat was opened pre-restart and Claude staged with a different id).
+  // re-sync chat_id when a proposal batch lands carrying a different one
+  // (e.g. a chat was opened pre-restart and Claude staged with a different id).
   useEffect(() => {
-    if (proposal && proposal.chat_id && proposal.chat_id !== chatIdRef.current) {
-      chatIdRef.current = proposal.chat_id;
+    if (stagedChatId && stagedChatId !== chatIdRef.current) {
+      chatIdRef.current = stagedChatId;
     }
-  }, [proposal]);
+  }, [stagedChatId]);
 
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState<"send" | "accept" | "close" | null>(null);
+  const [pickedProposalId, setPickedProposalId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset pick when a fresh proposal batch lands (whole list replaced).
+  // batchKey = joined proposal_ids → guaranteed to change across batches
+  // even if back-to-back stages share a proposed_at millisecond.
+  const batchKey = proposals.map((p) => p.proposal_id).join(",");
+  useEffect(() => {
+    if (proposals.length === 1) {
+      setPickedProposalId(proposals[0].proposal_id);
+    } else if (proposals.length > 1) {
+      setPickedProposalId((cur) =>
+        cur && proposals.some((p) => p.proposal_id === cur) ? cur : proposals[0].proposal_id,
+      );
+    } else {
+      setPickedProposalId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [batchKey]);
 
   // autoscroll on new message
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length, proposal?.proposed_at]);
+  }, [messages.length, batchKey]);
 
   const send = async (text: string) => {
     if (busy) return;
@@ -339,11 +359,12 @@ function ChatPanel({
   };
 
   const accept = async () => {
-    if (busy || !proposal) return;
+    if (busy || proposals.length === 0 || !pickedProposalId) return;
     setBusy("accept");
     try {
       await postAction(sid, node.id, "chat_accept", {
-        chat_id: chatIdRef.current ?? proposal.chat_id,
+        chat_id: chatIdRef.current ?? stagedChatId ?? uuid(),
+        proposal_id: pickedProposalId,
       });
     } catch (e) {
       const rej = e as ActionRejection;
@@ -382,8 +403,15 @@ function ChatPanel({
           ×
         </button>
       </header>
-      {proposal && (
-        <ProposalBanner proposal={proposal} node={node} onAccept={accept} busy={busy === "accept"} />
+      {proposals.length > 0 && (
+        <ProposalPicker
+          proposals={proposals}
+          node={node}
+          pickedId={pickedProposalId}
+          onPick={setPickedProposalId}
+          onAccept={accept}
+          busy={busy === "accept"}
+        />
       )}
       <div ref={listRef} className="gc-chat-list">
         {messages.length === 0 && (
@@ -429,50 +457,81 @@ function ChatPanel({
   );
 }
 
-function ProposalBanner({
-  proposal,
+function ProposalPicker({
+  proposals,
   node,
+  pickedId,
+  onPick,
   onAccept,
   busy,
 }: {
-  proposal: PendingProposal;
+  proposals: PendingProposal[];
   node: DecisionNode;
+  pickedId: string | null;
+  onPick: (id: string) => void;
   onAccept: () => void;
   busy: boolean;
 }) {
-  const ops = proposal.ops ?? null;
-  const adds = ops?.adds ?? [];
-  const removes = ops?.removes ?? [];
-  const removeLabels = useMemo(() => {
-    const byId = new Map(node.branches.map((b) => [b.id, b.label] as const));
-    return removes.map((id) => byId.get(id) ?? id);
-  }, [node.branches, removes]);
+  const labelById = useMemo(
+    () => new Map(node.branches.map((b) => [b.id, b.label] as const)),
+    [node.branches],
+  );
+  const multi = proposals.length > 1;
+  const groupName = `gc-proposal-${node.id}`;
   return (
     <div className="gc-chat-proposal">
       <header className="gc-chat-proposal-head">
-        <span className="gc-chip gc-chip-proposal">proposed outcome: {proposal.outcome}</span>
+        <span className="gc-chip gc-chip-proposal">
+          {multi ? `proposed: pick one of ${proposals.length}` : `proposed outcome: ${proposals[0].outcome}`}
+        </span>
       </header>
-      <p className="gc-chat-proposal-summary">{proposal.summary}</p>
-      {proposal.outcome === "refine" && (adds.length > 0 || removeLabels.length > 0) && (
-        <ul className="gc-chat-proposal-ops">
-          {adds.map((b, i) => (
-            <li key={`add-${i}`} className="gc-chat-op-add">
-              + {b.label}
-              {b.rationale ? <span className="gc-dim"> — {b.rationale}</span> : null}
+      <ul className="gc-chat-proposal-list" role={multi ? "radiogroup" : undefined}>
+        {proposals.map((p) => {
+          const checked = pickedId === p.proposal_id;
+          const adds = p.ops?.adds ?? [];
+          const removes = p.ops?.removes ?? [];
+          return (
+            <li key={p.proposal_id} className={`gc-chat-proposal-item${checked ? " is-picked" : ""}`}>
+              <label className="gc-chat-proposal-row">
+                <input
+                  type="radio"
+                  name={groupName}
+                  value={p.proposal_id}
+                  checked={checked}
+                  disabled={busy}
+                  onChange={() => onPick(p.proposal_id)}
+                />
+                <span className="gc-chat-proposal-body">
+                  {multi && (
+                    <span className="gc-chip gc-chip-proposal-mini">{p.outcome}</span>
+                  )}
+                  <span className="gc-chat-proposal-summary">{p.summary}</span>
+                  {p.outcome === "refine" && (adds.length > 0 || removes.length > 0) && (
+                    <ul className="gc-chat-proposal-ops">
+                      {adds.map((b, i) => (
+                        <li key={`add-${i}`} className="gc-chat-op-add">
+                          + {b.label}
+                          {b.rationale ? <span className="gc-dim"> — {b.rationale}</span> : null}
+                        </li>
+                      ))}
+                      {removes.map((rid, i) => (
+                        <li key={`rm-${i}`} className="gc-chat-op-remove">
+                          − {labelById.get(rid) ?? rid}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </span>
+              </label>
             </li>
-          ))}
-          {removeLabels.map((lbl, i) => (
-            <li key={`rm-${i}`} className="gc-chat-op-remove">
-              − {lbl}
-            </li>
-          ))}
-        </ul>
-      )}
+          );
+        })}
+      </ul>
       <div className="gc-chat-proposal-actions">
         <button
           type="button"
           className="gc-btn gc-btn-primary"
-          disabled={busy}
+          disabled={busy || !pickedId}
           onClick={onAccept}
         >
           {busy ? "accepting…" : "Accept"}

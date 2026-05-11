@@ -662,12 +662,12 @@ class Store:
                 if scoped is None:
                     return None
             # inline-chat: flag node as having an open thread. Fresh open
-            # wipes any leftover messages / pending proposal from a prior
+            # wipes any leftover messages / pending proposals from a prior
             # chat session on the same node (after Close + re-open, or
             # rehydration of a stale state).
             node.chat_open = True
             node.chat_messages = []
-            node.pending_proposal = None
+            node.pending_proposals = []
             return AskBranchesResult(
                 node_id=action.node_id,
                 chat_branch_id=scoped.id if scoped else None,
@@ -718,18 +718,24 @@ class Store:
         self._persist(s)
         return msg, seq, None
 
-    def set_pending_proposal(
+    def set_pending_proposals(
         self,
         sid: str,
         node_id: str,
         chat_id: str,
-        outcome: str,
-        ops: Optional[ChatOps],
-        summary: str,
-    ) -> tuple[Optional[PendingProposal], Optional[str]]:
-        """Stage (or overwrite) the chat outcome proposal on the node."""
-        if outcome not in ("refine", "redirect", "resolve"):
-            return None, f"bad outcome: {outcome}"
+        proposals: list[dict],
+    ) -> tuple[Optional[list[PendingProposal]], Optional[str]]:
+        """Stage (or replace) the chat outcome proposals on the node.
+
+        Callers (currently only post_chat_message) MUST validate via
+        validate_proposals() first — that's the atomic gate that decides
+        whether the chat message gets appended. This method re-checks
+        only the lightweight state invariants (session/node/chat_open)
+        and trusts proposal shape from the caller. Existing list is
+        REPLACED atomically on success (no stacking).
+        """
+        if not proposals:
+            return None, "proposals required (non-empty list)"
         s = self.sessions.get(sid)
         if not s:
             return None, "no such session"
@@ -738,34 +744,70 @@ class Store:
             return None, "no such node"
         if not node.chat_open:
             return None, "chat not open"
-        if outcome == "refine":
-            # validate ops shape; do NOT mutate node.branches yet (apply
-            # happens on Accept). Just check branch ids resolve.
-            ops_obj = ops or ChatOps()
-            existing_ids = {b.id for b in node.branches}
-            for rid in ops_obj.removes:
-                if rid not in existing_ids:
-                    return None, f"unknown branch id in removes: {rid}"
-            staged_ops: Optional[ChatOps] = ops_obj
-        else:
-            staged_ops = None
-        prop = PendingProposal(
-            chat_id=chat_id,
-            outcome=outcome,  # type: ignore[arg-type]
-            ops=staged_ops,
-            summary=summary,
-            proposed_at=time.time(),
-        )
-        node.pending_proposal = prop
+        now = time.time()
+        staged: list[PendingProposal] = []
+        for p in proposals:
+            outcome = p["outcome"]
+            ops_dict = p.get("ops")
+            staged_ops = ChatOps.model_validate(ops_dict) if outcome == "refine" else None
+            staged.append(
+                PendingProposal(
+                    chat_id=chat_id,
+                    outcome=outcome,
+                    ops=staged_ops,
+                    summary=p["summary"],
+                    proposed_at=now,
+                )
+            )
+        node.pending_proposals = staged
         self._persist(s)
-        return prop, None
+        return staged, None
+
+    def validate_proposals(
+        self,
+        sid: str,
+        node_id: str,
+        proposals: list[dict],
+    ) -> Optional[str]:
+        """Validate a proposals batch BEFORE staging. Returns None on OK,
+        an error string on failure. Pure check — never mutates state.
+        Used by post_chat_message to atomically reject the whole tool
+        call (no message append, no stage) when any proposal is bad.
+        """
+        if not isinstance(proposals, list) or not proposals:
+            return "proposals must be a non-empty list"
+        s = self.sessions.get(sid)
+        node = s.nodes.get(node_id) if s else None
+        existing_branch_ids = {b.id for b in node.branches} if node else set()
+        for idx, p in enumerate(proposals):
+            if not isinstance(p, dict):
+                return f"proposals[{idx}]: must be an object"
+            outcome = p.get("outcome")
+            summary = p.get("summary")
+            ops_raw = p.get("ops")
+            if outcome not in ("refine", "redirect", "resolve"):
+                return f"proposals[{idx}]: bad outcome: {outcome}"
+            if not summary:
+                return f"proposals[{idx}]: summary required"
+            if outcome == "refine":
+                try:
+                    ops_obj = ChatOps.model_validate(ops_raw or {})
+                except Exception as e:
+                    return f"proposals[{idx}]: bad ops: {e}"
+                for rid in ops_obj.removes:
+                    if rid not in existing_branch_ids:
+                        return f"proposals[{idx}]: unknown branch id in removes: {rid}"
+            elif ops_raw:
+                return f"proposals[{idx}]: ops only valid for refine, got {outcome}"
+        return None
 
     def accept_proposal(
-        self, sid: str, node_id: str
+        self, sid: str, node_id: str, proposal_id: Optional[str] = None
     ) -> tuple[Optional[Node], Optional[str], Optional[str]]:
-        """Commit the staged proposal: applies via apply_chat_result, then
-        clears live transcript / pending_proposal / chat_open. Returns
-        (node, redirect_branch_id, err).
+        """Commit ONE staged proposal (picked by proposal_id): applies via
+        apply_chat_result, then clears live transcript / pending_proposals /
+        chat_open. When proposal_id is None and exactly one is staged, the
+        sole proposal is picked. Returns (node, redirect_branch_id, err).
         """
         s = self.sessions.get(sid)
         if not s:
@@ -773,15 +815,23 @@ class Store:
         node = s.nodes.get(node_id)
         if not node:
             return None, None, "no such node"
-        prop = node.pending_proposal
-        if prop is None:
+        props = node.pending_proposals
+        if not props:
             return None, None, "no proposal staged"
+        if proposal_id is None:
+            if len(props) > 1:
+                return None, None, "proposal_id required (multiple staged)"
+            prop = props[0]
+        else:
+            prop = next((p for p in props if p.proposal_id == proposal_id), None)
+            if prop is None:
+                return None, None, f"unknown proposal_id: {proposal_id}"
         # Clear chat-track fields BEFORE the apply runs so its internal
         # _persist captures the final clean state in one write. A crash
         # between two persists previously left an orphaned open-chat panel
         # on a resumed session.
         node.chat_messages = []
-        node.pending_proposal = None
+        node.pending_proposals = []
         node.chat_open = False
         # reuse the canonical apply path — same mutations as the
         # apply_chat_result MCP tool. It also unlocks (refine/resolve)
@@ -814,7 +864,7 @@ class Store:
             return None, "no such node"
         # chat fields
         node.chat_messages = []
-        node.pending_proposal = None
+        node.pending_proposals = []
         node.chat_open = False
         # node-unlock logic (inlined from unlock_node — we want a SINGLE
         # _persist at the bottom that captures both the unlock + session

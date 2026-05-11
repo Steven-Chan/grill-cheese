@@ -43,7 +43,7 @@ export type SessionAction =
   | { type: "node_updated"; node: DecisionNode }
   | { type: "node_committed"; node_id: string; action: string | null }
   | { type: "chat_message_added"; node_id: string; message: ChatMessage }
-  | { type: "chat_proposal_staged"; node_id: string; proposal: PendingProposal }
+  | { type: "chat_proposals_staged"; node_id: string; proposals: PendingProposal[] }
   | { type: "chat_closed"; node_id: string };
 
 export interface Snapshot {
@@ -223,10 +223,10 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       const updated: DecisionNode = { ...n, chat_messages: messages };
       return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
     }
-    case "chat_proposal_staged": {
+    case "chat_proposals_staged": {
       const n = state.nodes[action.node_id];
       if (!n) return state;
-      const updated: DecisionNode = { ...n, pending_proposal: action.proposal };
+      const updated: DecisionNode = { ...n, pending_proposals: action.proposals };
       return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
     }
     case "chat_closed": {
@@ -236,7 +236,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         ...n,
         chat_open: false,
         chat_messages: [],
-        pending_proposal: null,
+        pending_proposals: [],
       };
       return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
     }

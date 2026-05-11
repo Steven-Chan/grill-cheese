@@ -416,6 +416,7 @@ async def post_chat_message(
     chat_id: str,
     msg_id: str,
     text: str,
+    proposals: Optional[list[dict]] = None,
 ) -> dict:
     """Append a Claude assistant reply to the inline chat thread on a node.
 
@@ -426,13 +427,33 @@ async def post_chat_message(
     idempotent on retry — same msg_id is a no-op. Use the same id if the
     transport retries.
 
-    The user keeps the chat open by typing more; you keep replying with
-    post_chat_message. When the chat has reached an answer, call
-    `propose_chat_outcome` to stage the outcome — the user clicks Accept
-    in the GUI to commit. Do NOT call `apply_chat_result` from the
-    inline-chat flow — `propose_chat_outcome` + the GUI Accept button
-    are the canonical path.
+    `proposals` (optional): stage one or more chat outcome alternatives
+    inline with the reply, so the user sees the Accept picker the moment
+    your message lands. Skip an extra round-trip. Each item shape:
+        {"outcome": "refine" | "redirect" | "resolve",
+         "summary": "<2-4 sentence narrative shown on Accept picker>",
+         "ops": {"adds": [{label, rationale, is_recommended}],
+                 "removes": ["<branch_id>", ...]}}    # refine only
+    Pass a length-1 list for a single proposal; pass 2+ when you're
+    offering the user alternative ways to resolve the chat (they pick ONE
+    via radio + Accept). Validation is atomic across the whole batch —
+    any bad item rejects the call, message NOT appended, existing
+    staged set untouched. A successful call REPLACES the staged list
+    (no stacking).
+
+    Omit `proposals` when your reply is mid-thread (still gathering info).
+    Include it when this reply is converging and you want the user to
+    pick an outcome. Do NOT call `apply_chat_result` from the inline-chat
+    flow — the inline `proposals` arg + the GUI Accept button are the
+    canonical path.
     """
+    # Validate proposals up front so we never half-commit. Atomic gate:
+    # any bad item rejects the call before message append.
+    if proposals is not None:
+        verr = store.validate_proposals(session_id, node_id, proposals)
+        if verr is not None:
+            return {"ok": False, "err": verr}
+
     msg, seq, err = store.append_chat_message(
         sid=session_id,
         node_id=node_id,
@@ -458,68 +479,39 @@ async def post_chat_message(
                 },
             },
         )
-    return {"ok": True, "msg_id": msg.msg_id}
 
+    result: dict = {"ok": True, "msg_id": msg.msg_id}
 
-@mcp.tool()
-async def propose_chat_outcome(
-    session_id: str,
-    node_id: str,
-    chat_id: str,
-    outcome: str,
-    summary: str,
-    ops: Optional[dict] = None,
-) -> dict:
-    """Stage a chat outcome proposal. User clicks Accept in the GUI to commit.
+    # Gate staging on a fresh append (seq is not None). On idempotent
+    # replay the original call already staged these proposals — re-staging
+    # would clobber any newer set that landed between the original
+    # response loss and the retry.
+    if proposals is not None and seq is not None:
+        staged, perr = store.set_pending_proposals(
+            sid=session_id,
+            node_id=node_id,
+            chat_id=chat_id,
+            proposals=proposals,
+        )
+        # message already landed; surface stage failure without rolling back
+        if perr is not None or staged is None:
+            result["proposal_err"] = perr or "stage failed"
+        else:
+            await store.broadcast(
+                session_id,
+                {
+                    "type": "chat_proposals_staged",
+                    "session_id": session_id,
+                    "payload": {
+                        "node_id": node_id,
+                        "proposals": [p.model_dump() for p in staged],
+                    },
+                },
+            )
+            result["proposal_ids"] = [p.proposal_id for p in staged]
+            result["proposed_at"] = staged[0].proposed_at
 
-    `outcome` ∈ {refine, redirect, resolve}. Same semantics as
-    `apply_chat_result`:
-      - refine:   ops {adds: [{label,rationale,is_recommended}], removes: [ids]}.
-                  Validated up front; bad ids -> err, nothing staged.
-      - redirect: original question wrong. Server synthesizes a redirect
-                  branch on Accept; you'll receive its id in node_updated.
-      - resolve:  chat is the answer; server synthesizes a chosen branch
-                  on Accept.
-
-    Staging is single-slot: a fresh propose_chat_outcome call OVERWRITES
-    the prior pending proposal (no stacking). User has no Reject button —
-    they either Accept or keep typing.
-
-    `summary` is the 2-4 sentence narrative the user will see in the
-    Accept banner (and which lands as the ChatBlock summary on commit).
-    Use the same `chat_id` you've been carrying through post_chat_message
-    calls.
-    """
-    if outcome not in ("refine", "redirect", "resolve"):
-        return {"ok": False, "err": f"bad outcome: {outcome}"}
-    parsed_ops: Optional[ChatOps] = None
-    if outcome == "refine":
-        try:
-            parsed_ops = ChatOps.model_validate(ops or {})
-        except Exception as e:
-            return {"ok": False, "err": f"bad ops: {e}"}
-    prop, err = store.set_pending_proposal(
-        sid=session_id,
-        node_id=node_id,
-        chat_id=chat_id,
-        outcome=outcome,
-        ops=parsed_ops,
-        summary=summary,
-    )
-    if err is not None or prop is None:
-        return {"ok": False, "err": err or "stage failed"}
-    await store.broadcast(
-        session_id,
-        {
-            "type": "chat_proposal_staged",
-            "session_id": session_id,
-            "payload": {
-                "node_id": node_id,
-                "proposal": prop.model_dump(),
-            },
-        },
-    )
-    return {"ok": True, "proposed_at": prop.proposed_at}
+    return result
 
 
 @mcp.tool()

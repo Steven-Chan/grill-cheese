@@ -36,7 +36,6 @@ _TOOL_FUNCS = {
     "resume_session_tool": mcp_app.resume_session_tool,
     "apply_chat_result": mcp_app.apply_chat_result,
     "post_chat_message": mcp_app.post_chat_message,
-    "propose_chat_outcome": mcp_app.propose_chat_outcome,
     "end_session": mcp_app.end_session,
     "get_session_snapshot": mcp_app.get_session_snapshot,
 }

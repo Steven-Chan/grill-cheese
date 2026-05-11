@@ -439,6 +439,47 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-chat-op-add { color: #6fbf73; }
 .gc-chat-op-remove { color: #d97a7a; text-decoration: line-through; }
 .gc-chat-proposal-actions { margin-top: 4px; display: flex; gap: 8px; }
+.gc-chat-proposal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gc-chat-proposal-item {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 6px;
+  transition: background 120ms, border-color 120ms;
+}
+.gc-chat-proposal-item.is-picked {
+  background: rgba(232, 142, 93, 0.12);
+  border-color: rgba(232, 142, 93, 0.45);
+}
+.gc-chat-proposal-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+.gc-chat-proposal-row input[type="radio"] { margin-top: 3px; }
+.gc-chat-proposal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+.gc-chip-proposal-mini {
+  align-self: flex-start;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(232, 142, 93, 0.18);
+  color: var(--gc-warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 .gc-chat-input {
   display: flex;
   align-items: stretch;

@@ -51,9 +51,12 @@ class ChatMessage(BaseModel):
     ts: float
 
 
-# inline-chat: latest staged proposal from Claude. Overwritten when Claude
-# emits a fresh propose_chat_outcome (no stacking). Cleared on Accept/Close.
+# inline-chat: staged proposal from Claude. Multiple may be staged at once
+# (Claude offers a set of alternative outcomes); user picks ONE via
+# proposal_id to accept. Whole list is replaced when Claude emits a fresh
+# post_chat_message(proposals=[...]) (no stacking). Cleared on Accept/Close.
 class PendingProposal(BaseModel):
+    proposal_id: str = Field(default_factory=_bid)
     chat_id: str
     outcome: ChatOutcome
     ops: Optional[ChatOps] = None  # refine only
@@ -103,10 +106,12 @@ class Node(BaseModel):
     # so refresh/restart preserves the thread. Pruned on Accept (apply lands
     # as ChatBlock) or Close (discard, nothing applied).
     chat_messages: list[ChatMessage] = Field(default_factory=list)
-    # inline-chat: latest staged proposal from Claude. Single-slot — fresh
-    # propose_chat_outcome overwrites. None when chat is open with no
-    # proposal yet, or after Accept/Close.
-    pending_proposal: Optional[PendingProposal] = None
+    # inline-chat: staged proposals from Claude. Multi-slot — Claude can
+    # offer N alternatives in one `post_chat_message(proposals=[...])`
+    # call; the whole list is replaced atomically on a fresh stage (no
+    # stacking). User picks ONE via proposal_id to commit. Empty list
+    # when chat is open with no proposals yet, or after Accept/Close.
+    pending_proposals: list[PendingProposal] = Field(default_factory=list)
     # inline-chat: true between user clicking Chat and Accept/Close.
     # Survives reload so the panel re-renders open.
     chat_open: bool = False
@@ -217,6 +222,9 @@ class GuiAction(BaseModel):
     msg_id: Optional[str] = None
     # inline-chat: user-typed text for action=chat_user_msg.
     text: Optional[str] = None
+    # inline-chat: which staged proposal the user accepted. Required on
+    # action=chat_accept now that multiple proposals can be staged at once.
+    proposal_id: Optional[str] = None
     action: Literal[
         "next", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",

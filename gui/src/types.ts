@@ -27,8 +27,10 @@ export interface ChatMessage {
   ts: number;
 }
 
-// inline-chat: latest staged proposal from Claude.
+// inline-chat: a staged proposal from Claude. Multiple may be staged at
+// once (Claude offers alternatives); user picks ONE via proposal_id.
 export interface PendingProposal {
+  proposal_id: string;
   chat_id: string;
   outcome: ChatOutcome;
   ops?: { adds?: Branch[]; removes?: string[] } | null;
@@ -76,8 +78,10 @@ export interface DecisionNode {
   redirected?: boolean;
   // inline-chat: live transcript (pruned on Accept/Close)
   chat_messages?: ChatMessage[];
-  // inline-chat: latest staged proposal from Claude; one-slot, overwritten
-  pending_proposal?: PendingProposal | null;
+  // inline-chat: staged proposals from Claude. Multi-slot — N alternatives
+  // user picks one of. Empty list when no proposals are staged. Whole list
+  // replaced atomically on a fresh stage (no stacking).
+  pending_proposals?: PendingProposal[];
   // inline-chat: true between user clicking Chat and Accept/Close
   chat_open?: boolean;
   // server-internal action buffer fields (persistence). GUI ignores.
@@ -138,6 +142,6 @@ export type SseEvent =
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
   | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }>; generate_docs?: boolean; docs_reason?: string | null } }
   | { type: "chat_message_added"; session_id: string; payload: { node_id: string; chat_id: string; message: ChatMessage; seq?: number } }
-  | { type: "chat_proposal_staged"; session_id: string; payload: { node_id: string; proposal: PendingProposal } }
+  | { type: "chat_proposals_staged"; session_id: string; payload: { node_id: string; proposals: PendingProposal[] } }
   | { type: "chat_closed"; session_id: string; payload: { node_id: string; chat_id: string } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };

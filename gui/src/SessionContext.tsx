@@ -99,11 +99,11 @@ export function SessionProvider({ sid, children }: Props) {
             message: ev.payload.message,
           });
           break;
-        case "chat_proposal_staged":
+        case "chat_proposals_staged":
           d({
-            type: "chat_proposal_staged",
+            type: "chat_proposals_staged",
             node_id: ev.payload.node_id,
-            proposal: ev.payload.proposal,
+            proposals: ev.payload.proposals,
           });
           break;
         case "chat_closed":

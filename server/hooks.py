@@ -294,7 +294,9 @@ async def _handle_chat_action(action: GuiAction) -> Response:
                 status_code=400,
             )
         node, redirect_bid, err = store.accept_proposal(
-            sid=action.session_id, node_id=action.node_id
+            sid=action.session_id,
+            node_id=action.node_id,
+            proposal_id=action.proposal_id,
         )
         if err is not None or node is None:
             return JSONResponse({"ok": False, "err": err or "accept failed"}, status_code=400)
