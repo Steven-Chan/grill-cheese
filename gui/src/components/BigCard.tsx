@@ -249,23 +249,21 @@ function DecisionCard({
         <div className="gc-bigcard-actions">
           <button
             type="button"
+            className="gc-btn gc-btn-secondary"
+            disabled={locked || !!busy}
+            onClick={() => send("chat", { skipPicks: true })}
+            title="Open inline chat with Claude about this question"
+          >
+            Chat
+          </button>
+          <button
+            type="button"
             className="gc-btn gc-btn-primary"
             disabled={locked || !canSubmit || !!busy}
             onClick={() => send("next")}
           >
             {busy === "next" ? "sending…" : "Next"}
           </button>
-          <div className="gc-bigcard-footer">
-            <button
-              type="button"
-              className="gc-btn gc-btn-secondary"
-              disabled={locked || !!busy}
-              onClick={() => send("chat", { skipPicks: true })}
-              title="Open inline chat with Claude about this question"
-            >
-              Chat
-            </button>
-          </div>
         </div>
 
         {!!node.committed && !paused && !node.chat_open && (

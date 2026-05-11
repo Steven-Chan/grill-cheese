@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { deleteSession, listSessions } from "../api";
+import { FireAnimation } from "../components/FireAnimation";
 import { openSse } from "../sse";
 import { initialListState, listReducer } from "../state";
 import type { SessionMeta, SseEvent } from "../types";
@@ -57,7 +58,10 @@ export function SessionListPage() {
   return (
     <div className="gc-page gc-list-page">
       <header className="gc-list-header">
-        <h1>grill·cheese</h1>
+        <h1>
+          <FireAnimation size={32} />
+          <span>grill·<span className="gc-brand-cheese">cheese</span></span>
+        </h1>
         <p className="gc-dim">
           Server: <code>127.0.0.1:7878</code>
         </p>

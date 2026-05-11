@@ -124,7 +124,7 @@ function DetailShell() {
           {/* flame ON when Claude is expected to push next step:
              - no pending node (after next / chat-accept / continue_grill / pre-first-push)
              - or wrapping (session_wrap fired, awaiting present_summary) */}
-          {state.status === "active" && (state.pendingNodeId === null || state.wrapping) && (
+          {state.loaded && state.status === "active" && (state.pendingNodeId === null || state.wrapping) && (
             <span className="gc-head-flame gc-dim">
               <FireAnimation size={16} />
               <span>waiting…</span>
