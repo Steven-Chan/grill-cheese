@@ -73,6 +73,18 @@ async def actions_endpoint(request: Request) -> Response:
     if s_pre:
         node_pre = s_pre.nodes.get(action.node_id)
         if node_pre:
+            # Doc-awareness: implement_now is blocked on summary nodes that
+            # Claude flagged as needing docs. Defense-in-depth — GUI hides the
+            # button, this gate catches stale clients / API replays.
+            if (
+                action.action == "implement_now"
+                and node_pre.kind == "summary"
+                and node_pre.generate_docs
+            ):
+                return JSONResponse(
+                    {"ok": False, "err": "implement_now_blocked"},
+                    status_code=400,
+                )
             removed = set(node_pre.removed_branch_ids)
             if action.action == "next" and any(b in removed for b in action.branch_ids):
                 return JSONResponse(
@@ -259,6 +271,14 @@ def _render_md(s, node_id, lines, depth, visited):
             lines.append("")
             lines.append(n.summary_body)
         lines.append("")
+        if n.generate_docs:
+            # Surface the doc-need signal so it survives the export even when
+            # user picked stop_here. When user picked create_plan, the plan
+            # markdown carries the full design; this section is the audit trail.
+            lines.append(f"{h} Docs flagged but not planned")
+            lines.append("")
+            lines.append(n.docs_reason or "_(no reason given)_")
+            lines.append("")
         for b in n.branches:
             if b.child_node_id:
                 _render_md(s, b.child_node_id, lines, depth + 1, visited)

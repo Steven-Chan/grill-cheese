@@ -162,12 +162,18 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
     seq = payload.get("seq")
     actions = payload.get("actions") or []
 
-    body = {
+    body: dict[str, Any] = {
         "session_id": session_id,
         "node_id": node_id,
         "seq": seq,
         "actions": actions,
     }
+    # Summary-node doc fields: pass through when present so skill sees them
+    # in the channel block (avoids extra get_session_snapshot on create_plan).
+    if "generate_docs" in payload:
+        body["generate_docs"] = payload["generate_docs"]
+    if "docs_reason" in payload:
+        body["docs_reason"] = payload["docs_reason"]
     meta = {
         "session_id": str(session_id),
         "node_id": str(node_id),

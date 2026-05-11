@@ -62,6 +62,14 @@ class Node(BaseModel):
     kind: Optional[NodeKind] = None
     # markdown body, populated only when kind == "summary"
     summary_body: Optional[str] = None
+    # doc-awareness flag, summary-only. When true: implement_now is blocked
+    # (server enforces, GUI hides) — CONTEXT.md/ADR changes must be planned
+    # first. create_plan / stop_here / continue_grill remain valid.
+    generate_docs: bool = False
+    # short reason Claude provides alongside generate_docs=True. For ADR
+    # candidates this MUST include the 3-criteria self-eval checklist
+    # (hard-to-reverse / surprising / real-tradeoff) — see SKILL.md.
+    docs_reason: Optional[str] = None
     # picked branches (plural-only — radio = list of length 1; multi = set).
     # Synth user_authored branches from typed text are appended to .branches
     # AND included here on the same submit.

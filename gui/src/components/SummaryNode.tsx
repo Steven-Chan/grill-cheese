@@ -66,6 +66,14 @@ export function SummaryNode({ data }: NodeProps) {
       ? (node.committed_action as SummaryAction)
       : null;
 
+  // Doc-awareness: hide implement_now when Claude flagged docs needed. Server
+  // also rejects the action (400 implement_now_blocked) — UI hide is the
+  // friendlier surface.
+  const docsNeeded = !!node.generate_docs;
+  const buttons = docsNeeded
+    ? BUTTONS.filter((b) => b.action !== "implement_now")
+    : BUTTONS;
+
   const send = async (action: SummaryAction) => {
     if (!sid) return;
     const note = action === "continue_grill" ? noteText.trim() || undefined : undefined;
@@ -101,8 +109,16 @@ export function SummaryNode({ data }: NodeProps) {
           rows={2}
           disabled={committed}
         />
+        {docsNeeded && (
+          <div className="gc-docs-flag">
+            <span className="gc-node-tag">docs needed</span>
+            {node.docs_reason && (
+              <span className="gc-docs-reason">{node.docs_reason}</span>
+            )}
+          </div>
+        )}
         <div className="gc-summary-btns">
-          {BUTTONS.map((b) => {
+          {buttons.map((b) => {
             const isPicked = chosenAction === b.action;
             return (
               <button

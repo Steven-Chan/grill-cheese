@@ -41,6 +41,14 @@ export interface DecisionNode {
   kind?: NodeKind | null;
   // markdown body, populated only when kind === "summary"
   summary_body?: string | null;
+  // doc-awareness flag, summary-only. When true: implement_now is hidden in
+  // GUI + rejected server-side (must plan docs first). create_plan /
+  // stop_here / continue_grill remain valid.
+  generate_docs?: boolean;
+  // short reason Claude provides alongside generate_docs=true. Includes the
+  // 3-criteria ADR checklist when ADR-worthy. Rendered as a caption on the
+  // summary card.
+  docs_reason?: string | null;
   // plural-only chosen state (radio = list of length 1).
   chosen_branch_ids?: string[];
   // chat-removed branch ids; soft delete, branch entry stays in branches[]
@@ -95,5 +103,5 @@ export type SseEvent =
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
   | { type: "node_resolved"; session_id: string; payload: { node_id: string; chosen_branch_ids?: string[]; chosen_branch_labels?: string[]; note?: string; action: string } }
-  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }> } }
+  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }>; generate_docs?: boolean; docs_reason?: string | null } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };

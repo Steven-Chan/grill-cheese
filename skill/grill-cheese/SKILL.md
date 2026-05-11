@@ -22,6 +22,15 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
    ```
    Save the trimmed output as `project`. Then compose a `title` — short imperative noun phrase, project-style (e.g. `Add billing system`, `Refactor SSE pubsub`). Hard cap **80 chars**, server rejects empty / overlong. Then call `start_session(title=<title>, brief=<the user's plan>, project=<project>)`. Save the returned `session_id`. The server uses `project` to partition session JSON files under `~/.grill-cheese/project-<project>/sessions/`. Title shows in the toolbar; brief lives in a collapsible banner.
 
+1a. **Pre-grill doc ingestion (silent).** Before pushing the first node, look for existing domain docs in the repo root (`git rev-parse --show-toplevel`):
+    - `CONTEXT.md` — domain glossary, relationships, flagged ambiguities.
+    - `docs/adr/*.md` — accepted architectural decision records.
+    - `CONTEXT-MAP.md` — present only in multi-context repos. Lists sub-contexts and their `CONTEXT.md` locations (e.g. `src/billing/CONTEXT.md`).
+
+    Read whatever exists, silently — no grill node, no chat. If `CONTEXT-MAP.md` exists, auto-detect the active sub-context from brief keywords vs the map's context names. If exactly one matches strongly, load that sub-context's `CONTEXT.md` + ADRs only. If 0 or ≥2 match, push **one** `present_branches` asking which sub-context applies (this is the only acceptable "meta" question before the real grill begins). For single-context repos (only a root `CONTEXT.md`), just read it. If neither file exists, proceed without — doc-awareness becomes a no-op for this session.
+
+    Hold the ingested docs in your working memory throughout the grill. **Never write anything to disk during grilling** — see "Doc-awareness" below.
+
 2. **Generate the next question.** Identify the *single most important live decision* given everything you know so far (the brief + every answer the user has given). Frame it as one focused question, like /grill-me would. Generate **2–4 candidate answers** as branches with one-sentence rationales. Single-mode (default): mark exactly one `is_recommended: true`. Multi-mode (set `multi_select=True`): mark every branch you'd pick (zero or more); GUI auto-checks all ★ on render.
 
 3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth, multi_select?)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
@@ -41,6 +50,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
      Per-item action: `next` | `stop` | `chat` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`.
      `chosen_branch_ids` / `chosen_branch_labels` are PARALLEL LISTS (same length, same order). Single-mode = length 1; multi-mode = length ≥ 1; may also include a synth `user_authored` branch when the user typed text alongside picks.
      `chat_branch_id` / `chat_branch_label` are set ONLY for `action=chat` (per-row chat scope).
+   - **Summary-node payloads also carry `generate_docs: bool` and `docs_reason: string|null`** at the outer level (alongside `actions`, NOT per-action). These echo back the flag/reason you set on `present_summary` so you don't need a snapshot round-trip to decide plan shape on `create_plan`. Absent on non-summary `node_committed` events.
    - `seq` is a per-session monotonic counter. Track `last_seen_seq` mentally. If `seq == last_seen_seq + 1` (or this is the first wake): act on `actions` directly. If `seq` jumped (server restart, missed events): call `get_session_snapshot(session_id)`, replay any flushed nodes you missed, then act.
 
 5. **Read the batch as a narrative and decide what to ask next.**
@@ -140,9 +150,9 @@ Flow:
 1. User clicks **wrap up** (toolbar) → channel wake delivers `action == "stop"` on the current pending DecisionNode.
 2. Call `present_summary(session_id, summary=<markdown recap of the chain so far>, parent_node_id=<id of the node that just got the stop>, parent_branch_id=<chosen branch id on that node, if any>)`. Returns `{node_id, instruction}` for the new summary card. END TURN.
 3. Next channel wake delivers the verdict action on the summary node:
-   - `stop_here` — user approves, no follow-up. Server has ended the session. Point user at the export.
-   - `create_plan` — user approves, wants a plan first. `chain_markdown` is the full chosen-path recap. Use it to write a detailed implementation plan (markdown doc, ordered tasks, file-level breakdown). Server has ended the session.
-   - `implement_now` — user approves, wants code now. `chain_markdown` is the full recap. Start coding immediately. Server has ended the session.
+   - `stop_here` — user approves, no follow-up. Server has ended the session. Point user at the export. If you set `generate_docs=true` on `present_summary`, the export carries a `## Docs flagged but not planned` section with your `docs_reason` — that is the signal preserved for a future re-grill.
+   - `create_plan` — user approves, wants a plan first. `chain_markdown` is the full chosen-path recap. Use it to write a detailed implementation plan (markdown doc, ordered tasks, file-level breakdown). If `generate_docs=true` was set, the plan **must** lead with `## Doc changes` (CONTEXT.md edits + new ADR files) and follow with `## Code changes` referencing the doc steps as prerequisites. One plan, ordered. Server has ended the session.
+   - `implement_now` — user approves, wants code now. `chain_markdown` is the full recap. Start coding immediately. Server has ended the session. **This button is hidden + server-rejected when you set `generate_docs=true` on `present_summary` — doc changes must be planned first.** If you see an `implement_now_blocked` error from the server, you set the flag and the user clicked through a stale GUI; ask the user to refresh and pick again.
    - `continue_grill` — user wants more grilling. `chosen_branch_ids[0]` is the synthetic continuation branch on the summary node; `note` (if set) is their direction. Push a fresh `present_branches(parent_node_id=<summary node id>, parent_branch_id=<chosen_branch_ids[0]>, depth=...)` to resume — END TURN.
 4. Always point the user at the markdown export when the session ends: `http://127.0.0.1:7878/export/<session_id>.md`.
 
@@ -226,21 +236,83 @@ present_branches(
 #   actions: [{node_id:"n4", chosen_branch_ids:[...], chosen_branch_labels:[...], action:"next"}]
 
 # ... many turns later, user clicks "wrap up" in toolbar ...
-# Channel wakes with action=stop on node n7. Push verdict card:
+# Channel wakes with action=stop on node n7. Push verdict card.
+# This chain pinned terminology (Customer vs Subscriber) and committed to an
+# event-sourced write model — both doc-worthy. Set the flag + provide reason:
 present_summary(
   session_id="ab12cd34",
-  summary="## Decisions\n\n- Pricing: usage-based\n- Processor: Stripe\n- Metering: Stripe Meters API\n\n## Open\n- Free-tier threshold still TBD",
+  summary="## Decisions\n\n- Pricing: usage-based\n- Processor: Stripe\n- Metering: Stripe Meters API\n- Write model: event-sourced\n\n## Open\n- Free-tier threshold still TBD",
   parent_node_id="n7",
   parent_branch_id="b14",
+  generate_docs=True,
+  docs_reason=(
+    "CONTEXT.md: pin 'Customer' (billing identity) vs 'Subscriber' "
+    "(active plan holder) — used interchangeably in brief.\n"
+    "ADR candidate: event-sourced ordering write model.\n"
+    "- hard to reverse? yes — 6mo of write-model work locked in\n"
+    "- surprising without context? yes — reader will assume CRUD\n"
+    "- real tradeoff? yes — considered CRUD+audit, rejected for replay needs"
+  ),
 )
 → {node_id: "ns1", instruction: "TURN_OVER. ..."}
-# END TURN.
+# END TURN. GUI hides implement_now. User picks stop_here / create_plan /
+# continue_grill.
 
 # ... user clicks "create_plan" ...
 # Channel wakes with action=create_plan, chain_markdown="# Grill Session ..."
-# Server has auto-ended the session. Write a plan from chain_markdown.
-# Do NOT call end_session.
+# Server has auto-ended the session. Because generate_docs was True, write
+# ONE plan with ## Doc changes first (CONTEXT.md edits + new ADR file), then
+# ## Code changes referencing those doc steps. Do NOT call end_session.
 ```
+
+## Doc-awareness (CONTEXT.md + ADRs)
+
+You silently ingested the repo's `CONTEXT.md` / ADRs / `CONTEXT-MAP.md` in step 1a. Use them during grilling **and** at summary time. **You never write to disk during grilling** — all doc work lands through the verdict surface.
+
+### During grilling
+
+- **Challenge terms against the glossary.** When the user uses a term that conflicts with `CONTEXT.md` (e.g. they say "account" but the glossary defines `Customer` and `User` as distinct), surface it as part of your next grill question: *"CONTEXT.md defines `Customer` as ordering identity, `User` as login identity. Which do you mean?"* This is the headline grill-with-docs win — do not skip it.
+- **Sharpen fuzzy language.** When the user uses vague / overloaded terms not in the glossary, propose a canonical name in your branch labels. ("Subscriber" vs "Customer" vs "Account holder" — pick one, justify, recommend.)
+- **Cross-reference code claims.** If the user states behavior that contradicts what you read in the codebase, flag it in the question reasoning, not as a separate node.
+- **Track doc-worthy moments silently.** When a grill question lands a decision that genuinely belongs in `CONTEXT.md` (term defined, relationship pinned) or in an ADR (hard-to-reverse architectural choice), call `record_implicit_decision(session_id, decision, rationale)` to note it. Prefix `decision` with `[CONTEXT]` or `[ADR]` so verdict-time scan can recognise it (`[CONTEXT] Customer = ordering identity`, `[ADR] Event-sourced ordering write model`). These accumulate in the implicit-decisions lane; the user does not interact with them mid-grill.
+- **Implicit decisions count against the cap.** The 5-per-session cap from "Depth + breadth budget" applies. Doc-track sparingly; the canonical place to land a meaningful decision is still a grill node.
+
+### At summary time
+
+When you call `present_summary`, evaluate the whole chain for doc impact:
+
+- **Set `generate_docs=True`** if the grilled chain produced any decision that warrants a `CONTEXT.md` change OR a new ADR. False otherwise — most short / scoped sessions do NOT need docs.
+- **Provide `docs_reason`** — short prose, **not** a detailed proposal (planning happens later). State the categories: "CONTEXT.md: clarify Customer vs Account ambiguity. ADR-worthy: choice of event-sourced ordering write model."
+- **ADR candidates need a self-eval checklist in `docs_reason`.** For every candidate ADR, write three explicit yes/no lines. If any is "no", **drop the ADR** — only record `[CONTEXT]` items in that case. Skip ADRs that don't pass all three; an ADR you can't justify on every criterion is noise. Format inside `docs_reason`:
+  ```
+  ADR candidate: <one-line decision>
+  - hard to reverse? yes — locks in 6 months of write-model work
+  - surprising without context? yes — a reader will assume CRUD
+  - real tradeoff? yes — considered CRUD + audit table, rejected
+  ```
+
+### Effect of `generate_docs=True`
+
+The server gates the verdict card:
+
+- `implement_now` is hidden in the GUI and rejected by the server (`400 implement_now_blocked`). Doc changes must be planned first.
+- Valid verdicts: `stop_here`, `create_plan`, `continue_grill`.
+
+What you do per verdict:
+
+- `create_plan` → write ONE plan markdown with `## Doc changes` first, `## Code changes` second. Doc section spells out every CONTEXT.md edit + new ADR file (with the 3-criteria checklist inline for each). Code section references the doc steps as prerequisites.
+- `stop_here` → export markdown already grows a `## Docs flagged but not planned` section with your `docs_reason`. No file writes. Tell the user the signal is preserved in the export; a future re-grill (or a different skill like `/plan-in-notion`) can act on it.
+- `continue_grill` → resume; you'll re-evaluate `generate_docs` at the next `present_summary`.
+
+### When `generate_docs=False`
+
+Original 4-verdict flow unchanged. `implement_now` is allowed. No doc surface in export. Pick this path for: refactors that don't change terminology, bug-fix sessions, exploratory grills that didn't settle on anything ADR-worthy.
+
+### What you NEVER do
+
+- Write to `CONTEXT.md` / `docs/adr/*` / `CONTEXT-MAP.md` during grilling. Ever. All doc artifacts are produced by `create_plan` post-verdict, never inline.
+- Add doc-tracking as a new node type. Use `record_implicit_decision` with the `[CONTEXT]` / `[ADR]` prefix — that's all.
+- Set `generate_docs=True` just because docs exist in the repo. Set it because the grilled chain actually produced something doc-worthy.
 
 ## Reminder on style
 

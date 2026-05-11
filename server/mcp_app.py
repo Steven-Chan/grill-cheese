@@ -164,6 +164,8 @@ async def present_summary(
     summary: str,
     parent_node_id: Optional[str] = None,
     parent_branch_id: Optional[str] = None,
+    generate_docs: bool = False,
+    docs_reason: str = "",
 ) -> dict:
     """Push a SUMMARY node (verdict card) to the GUI. Returns {node_id, instruction}.
 
@@ -183,6 +185,16 @@ async def present_summary(
 
     `summary` is markdown. Render breathing room — multi-paragraph, bullets,
     headings welcome.
+
+    `generate_docs` (default False) — set True if the grilled chain produced
+    decisions that warrant CONTEXT.md / ADR changes. When True:
+      - `implement_now` is BLOCKED (server returns 400, GUI hides the button).
+        CONTEXT.md / ADR changes must be PLANNED first (create_plan).
+      - Valid verdicts: stop_here / create_plan / continue_grill.
+    `docs_reason` is the short reason. For ADR candidates it MUST include the
+    3-criteria self-eval checklist (hard-to-reverse / surprising-without-context
+    / real-tradeoff = yes/no each). Skip ADR if any answer is no. See SKILL.md
+    section "Doc-awareness".
 
     For stop_here / create_plan / implement_now: do NOT call end_session.
     Server has already ended the session.
@@ -208,6 +220,8 @@ async def present_summary(
         depth=0,
         kind="summary",
         summary_body=summary,
+        generate_docs=generate_docs,
+        docs_reason=docs_reason or None,
     )
     await store.broadcast(
         session_id,

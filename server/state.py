@@ -187,6 +187,8 @@ class Store:
         kind: Optional[str] = None,
         summary_body: Optional[str] = None,
         multi_select: bool = False,
+        generate_docs: bool = False,
+        docs_reason: Optional[str] = None,
     ) -> Node:
         s = self.sessions[sid]
         node_id = uuid.uuid4().hex[:10]
@@ -206,6 +208,8 @@ class Store:
             kind=kind,
             summary_body=summary_body,
             multi_select=multi_select,
+            generate_docs=generate_docs,
+            docs_reason=docs_reason,
         )
         s.nodes[node_id] = node
         if s.root_node_id is None:
@@ -295,17 +299,25 @@ class Store:
         # broadcast committed event (timer callback is sync — schedule task)
         try:
             loop = asyncio.get_event_loop()
+            # Summary-node doc fields flow on the same event so the skill sees
+            # them when channel wakes it on create_plan / stop_here — without
+            # this it would need an extra get_session_snapshot round-trip just
+            # to know whether to write a doc-first plan.
+            payload: dict[str, Any] = {
+                "node_id": node_id,
+                "seq": seq,
+                "actions": [a.model_dump() for a in pending],
+            }
+            if node.kind == "summary":
+                payload["generate_docs"] = node.generate_docs
+                payload["docs_reason"] = node.docs_reason
             loop.create_task(
                 self.broadcast(
                     session_id,
                     {
                         "type": "node_committed",
                         "session_id": session_id,
-                        "payload": {
-                            "node_id": node_id,
-                            "seq": seq,
-                            "actions": [a.model_dump() for a in pending],
-                        },
+                        "payload": payload,
                     },
                 )
             )
