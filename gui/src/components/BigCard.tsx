@@ -180,102 +180,104 @@ function DecisionCard({
   };
 
   return (
-    <article className={`gc-bigcard${locked ? " locked" : ""}${paused ? " paused" : ""}`}>
-      <header className="gc-bigcard-head">
-        {node.multi_select && <span className="gc-chip">multi-select</span>}
-        <span className="gc-dim">depth {node.depth}</span>
-      </header>
-      <h2 className="gc-bigcard-q">{node.question}</h2>
-      {node.reasoning && <p className="gc-bigcard-reasoning">{node.reasoning}</p>}
+    <>
+      <article className={`gc-bigcard${locked ? " locked" : ""}${paused ? " paused" : ""}`}>
+        <header className="gc-bigcard-head">
+          {node.multi_select && <span className="gc-chip">multi-select</span>}
+          <span className="gc-dim">depth {node.depth}</span>
+        </header>
+        <h2 className="gc-bigcard-q">{node.question}</h2>
+        {node.reasoning && <p className="gc-bigcard-reasoning">{node.reasoning}</p>}
 
-      <ul className="gc-bigcard-branches">
-        {live.map((b) => {
-          const checked = picked.has(b.id);
-          return (
-            <li key={b.id} className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}`}>
+        <ul className="gc-bigcard-branches">
+          {live.map((b) => {
+            const checked = picked.has(b.id);
+            return (
+              <li key={b.id} className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}`}>
+                <label>
+                  <input
+                    type={multi ? "checkbox" : "radio"}
+                    name={`branch-${node.id}`}
+                    checked={checked}
+                    disabled={locked}
+                    onChange={() => togglePick(b.id)}
+                  />
+                  <span className="gc-branch-text">
+                    <span className="gc-branch-label">
+                      {b.is_recommended && <span className="gc-star" title="recommended">★</span>} {b.label}
+                    </span>
+                    {b.rationale && <span className="gc-branch-rationale">{b.rationale}</span>}
+                  </span>
+                </label>
+              </li>
+            );
+          })}
+          {!multi && (
+            <li className={`gc-branch gc-branch-other${otherPicked ? " checked" : ""}`}>
               <label>
                 <input
-                  type={multi ? "checkbox" : "radio"}
+                  type="radio"
                   name={`branch-${node.id}`}
-                  checked={checked}
+                  checked={otherPicked}
                   disabled={locked}
-                  onChange={() => togglePick(b.id)}
+                  onChange={() => togglePick(OTHER_PICK)}
                 />
                 <span className="gc-branch-text">
-                  <span className="gc-branch-label">
-                    {b.is_recommended && <span className="gc-star" title="recommended">★</span>} {b.label}
-                  </span>
-                  {b.rationale && <span className="gc-branch-rationale">{b.rationale}</span>}
+                  <span className="gc-branch-label">Other — type your own answer</span>
                 </span>
               </label>
             </li>
-          );
-        })}
-        {!multi && (
-          <li className={`gc-branch gc-branch-other${otherPicked ? " checked" : ""}`}>
-            <label>
-              <input
-                type="radio"
-                name={`branch-${node.id}`}
-                checked={otherPicked}
-                disabled={locked}
-                onChange={() => togglePick(OTHER_PICK)}
-              />
-              <span className="gc-branch-text">
-                <span className="gc-branch-label">Other — type your own answer</span>
-              </span>
-            </label>
-          </li>
-        )}
-      </ul>
+          )}
+        </ul>
 
-      <div className="gc-bigcard-note">
-        <textarea
-          rows={2}
-          placeholder={
-            multi
-              ? "or type your own answer / redirect…"
-              : otherPicked
-                ? "type your answer / redirect…"
-                : "pick \"Other\" above to type your own answer"
-          }
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          disabled={locked || !noteEnabled}
-        />
-      </div>
+        <div className="gc-bigcard-note">
+          <textarea
+            rows={2}
+            placeholder={
+              multi
+                ? "or type your own answer / redirect…"
+                : otherPicked
+                  ? "type your answer / redirect…"
+                  : "pick \"Other\" above to type your own answer"
+            }
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            disabled={locked || !noteEnabled}
+          />
+        </div>
 
-      <div className="gc-bigcard-actions">
-        <button
-          type="button"
-          className="gc-btn gc-btn-primary"
-          disabled={locked || !canSubmit || !!busy}
-          onClick={() => send("next")}
-        >
-          {busy === "next" ? "sending…" : "Next"}
-        </button>
-        <div className="gc-bigcard-footer">
+        <div className="gc-bigcard-actions">
           <button
             type="button"
-            className="gc-btn gc-btn-secondary"
-            disabled={locked || !!busy}
-            onClick={() => send("chat", { skipPicks: true })}
-            title="Open inline chat with Claude about this question"
+            className="gc-btn gc-btn-primary"
+            disabled={locked || !canSubmit || !!busy}
+            onClick={() => send("next")}
           >
-            Chat
+            {busy === "next" ? "sending…" : "Next"}
           </button>
+          <div className="gc-bigcard-footer">
+            <button
+              type="button"
+              className="gc-btn gc-btn-secondary"
+              disabled={locked || !!busy}
+              onClick={() => send("chat", { skipPicks: true })}
+              title="Open inline chat with Claude about this question"
+            >
+              Chat
+            </button>
+          </div>
         </div>
-      </div>
 
+        {!!node.committed && !paused && !node.chat_open && (
+          <div className="gc-bigcard-locked-banner gc-dim">
+            <span>settled — waiting for the next question…</span>
+          </div>
+        )}
+      </article>
       {node.chat_open && (
         <ChatPanel node={node} sid={sid} onToast={onToast} />
       )}
-      {!!node.committed && !paused && !node.chat_open && (
-        <div className="gc-bigcard-locked-banner gc-dim">
-          <span>settled — waiting for the next question…</span>
-        </div>
-      )}
-    </article>
+    </>
   );
 }
 
