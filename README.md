@@ -1,23 +1,29 @@
 # grill-cheese
 
-Visual exhaustive **grill-me** for Claude Code. Streams every decision Claude wants to grill onto a node-graph canvas; the user steers (pick a branch, type a free-text answer, reject, stop). Two MCP calls per node — push then long-poll — so the human is in the loop without holding the MCP transport open.
+Visual exhaustive **grill-me** for Claude Code. Streams every decision Claude wants to grill onto a node-graph canvas; the user steers (pick a branch, type a free-text answer, chat to refine, stop). One MCP push per node; user actions delivered back via channel notifications, so the human is in the loop without holding the MCP transport open.
 
 Inspired by [Matt Pocock's grill-me skill](https://github.com/mattpocock/skills) and the [Pail](https://arxiv.org/abs/2503.06911) research IDE.
 
 ## Architecture
 
 ```
-            ┌─────────────────────────────────────────────┐
-            │      server/server.py  (uvicorn :7878)      │
-            │  ┌─────────────────┐  ┌─────────────────┐   │
-Claude Code │  │ /mcp            │  │ /hooks /actions │   │
-     ──MCP──┼──│ present_branches│  │  /events (SSE)  │───┼── GUI (xyflow)
-   ──hooks──┼──│ wait_for_action │  │  /export/<sid>  │   │
-            │  └─────────────────┘  └─────────────────┘   │
-            └─────────────────────────────────────────────┘
+Claude Code ──stdio MCP── server/shim.py
+                              │   ▲
+                    HTTP POST │   │ SSE /events
+                              ▼   │
+                  server/server.py (uvicorn :7878)
+                  ├── /internal/tool/{name}   present_branches, present_summary, ...
+                  ├── /hooks                  CC PreToolUse / PostToolUse telemetry
+                  ├── /actions                GUI clicks
+                  ├── /events                 SSE stream
+                  ├── /sessions               list active sessions
+                  ├── /snapshot/<sid>         JSON snapshot of a session
+                  ├── /export/<sid>.md        markdown export
+                  └── /                       xyflow GUI (browser)
 ```
 
-- **MCP** is the spine. `present_branches(question, branches[], multi_select?)` returns immediately with a `node_id`; the **stdio shim** (`server/shim.py`) bridges committed actions back via `notifications/claude/channel`. The user picks one branch (`action=next` with `branch_ids: [b]`), checks several in multi-mode (`branch_ids: [b1,b2,...]`), types free text (server synthesizes a `user_authored` Branch via `next + note`), pauses to chat (`action=chat`), or wraps up (`action=stop`). `wait_for_action` is gone — channels deliver actions push-style.
+- **Two processes.** `server/server.py` is the long-lived HTTP server (GUI, SSE, hooks, action endpoint, JSON dispatch). `server/shim.py` is the stdio MCP subprocess Claude Code spawns; it forwards tool calls to `/internal/tool/{name}` and bridges committed actions back via `notifications/claude/channel` (CC's Channels feature is stdio-only).
+- **MCP** is the spine. `present_branches(question, branches[], multi_select?)` returns immediately with a `node_id`. The user picks one branch (`action=next` with `branch_ids: [b]`), checks several in multi-mode (`branch_ids: [b1,b2,...]`), types free text (server synthesizes a `user_authored` Branch via `next + note`), pauses to chat (`action=chat`), or wraps up (`action=stop`). No long-poll — channels deliver actions push-style.
 - **Hooks** are ambient: every `PreToolUse` / `PostToolUse` from Claude is POSTed to `/hooks` and rendered next to the live decision node so you see when Claude grepped vs hallucinated.
 - **GUI** is React + xyflow + dagre. Pail-aware: dim stale subtrees, branch states (considered / chosen / removed-via-chat), typed answers materialise as `user_authored` branches on the node, implicit-decision lane.
 
@@ -50,6 +56,7 @@ cp -r skill/grill-cheese ~/.claude/skills/
 
 # register MCP server
 # merge the mcpServers block from claude-mcp-config.example.json into ~/.claude.json
+# edit the "cwd" field to the absolute path of your local grill-cheese checkout
 ```
 
 Then in any project (Claude Code ≥ 2.1.80 — channels flag required until the shim is plugin-published):
@@ -59,7 +66,7 @@ claude --dangerously-load-development-channels server:grill-cheese
 > /grill-cheese my plan is to add billing to my SaaS using Stripe
 ```
 
-Open `http://127.0.0.1:7878/` in a browser. Decisions appear as Claude generates them. Click a branch to commit it as your answer, hit "Other / type your answer" to override Claude's option set with free text, or use the `reject` tag to mark a branch you don't want re-surfaced. Claude reads your answer (branch + optional note, or pure note) and decides whether to drill down or move on — same flow as `/grill-me` reading a chat reply.
+Open `http://127.0.0.1:7878/` in a browser. Decisions appear as Claude generates them. Click a branch to commit it as your answer (single-select), check multiple in multi-select mode, or type free text in the always-visible textarea below the options — typed text becomes a synth `user_authored` branch on the node. Claude reads your pick + optional note (or pure note) and decides whether to drill down or move on — same flow as `/grill-me` reading a chat reply.
 
 ## Exports
 
@@ -77,7 +84,7 @@ uv run python -m server.server
 cd gui && npm run dev   # http://127.0.0.1:5173
 ```
 
-Vite proxies `/events`, `/actions`, `/sessions`, `/snapshot`, `/export` to the server.
+Vite proxies `/events`, `/actions`, `/sessions`, `/snapshot`, `/export` to the server. (`/internal/tool/{name}` is shim→server only; not GUI-bound.)
 
 ## Branch states
 

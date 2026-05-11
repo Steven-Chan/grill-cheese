@@ -6,7 +6,7 @@ Run via CC config:
         "channels-spike": {
           "command": "uv",
           "args": ["run", "python", "-m", "scripts.channels_spike"],
-          "cwd": "/Users/hoyin/Documents/grill-cheese"
+          "cwd": "/absolute/path/to/grill-cheese"
         }
       }
     }

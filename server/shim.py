@@ -12,7 +12,7 @@ CC config (~/.claude.json):
     "grill-cheese": {
       "command": "uv",
       "args": ["run","python","-m","server.shim"],
-      "cwd": "/Users/hoyin/Documents/grill-cheese"
+      "cwd": "/absolute/path/to/grill-cheese"
     }
 
 Launch CC:
