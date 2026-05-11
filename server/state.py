@@ -24,10 +24,15 @@ from .schemas import (
     Session,
 )
 
+# sentinel value held in Session.wrap_summary_node_id between wrap_session()
+# and the skill's first present_summary push. bind_wrap_summary swaps it for
+# the real node id.
+_WRAP_PENDING_SENTINEL = "__wrap_pending__"
+
 MAX_RING = 5000  # per-session SSE replay buffer
 DEBOUNCE_SECONDS = 0.75  # idle window before flushing buffered clicks
 TERMINAL_ACTIONS = {
-    "next", "stop", "chat",
+    "next", "chat",
     "stop_here", "create_plan", "implement_now", "continue_grill",
 }
 # subset that auto-end the session server-side after flush
@@ -270,7 +275,7 @@ class Store:
         return True
 
     def flush_now(self, session_id: str, node_id: str) -> None:
-        """Bypass idle timer — used by terminal-class clicks (next/other/stop/chat)."""
+        """Bypass idle timer — used by terminal-class clicks (next/chat + verdicts)."""
         existing = self._timers.pop(node_id, None)
         if existing is not None:
             existing.cancel()
@@ -404,6 +409,37 @@ class Store:
         self._persist(s)
         return s, not already
 
+    async def wrap_session(self, sid: str) -> Optional[Session]:
+        """Mark a session as awaiting verdict-card composition.
+
+        Sets wrap_summary_node_id to a sentinel and broadcasts session_wrap so
+        the shim wakes the skill. The skill's next present_summary call swaps
+        the sentinel for the real summary node id (see add_summary_node).
+
+        Idempotent: if already wrapping, returns the session without
+        re-broadcasting (double-click wrap-up is fine).
+        """
+        s = self.sessions.get(sid)
+        if not s or s.status == "ended":
+            return None
+        if s.wrap_summary_node_id is not None:
+            return s  # already wrapping
+        s.wrap_summary_node_id = _WRAP_PENDING_SENTINEL
+        self._persist(s)
+        await self.broadcast(
+            sid,
+            {"type": "session_wrap", "session_id": sid, "payload": {}},
+        )
+        return s
+
+    def bind_wrap_summary(self, sid: str, node_id: str) -> None:
+        """Swap wrap sentinel for the real summary node id. No-op if no wrap."""
+        s = self.sessions.get(sid)
+        if not s or s.wrap_summary_node_id != _WRAP_PENDING_SENTINEL:
+            return
+        s.wrap_summary_node_id = node_id
+        self._persist(s)
+
     def resume_session(self, sid: str) -> Optional[Session]:
         """Flip paused → active. Called explicitly via resume_session MCP tool
         when user types 'resume' in CC, or implicitly when present_branches
@@ -508,15 +544,14 @@ class Store:
         if node.is_flushed:
             return None  # locked
 
-        if action.action == "stop":
-            # stop on a summary node = treat as stop_here (defensive: GUI
-            # should not surface a "wrap up" button when summary is pending,
-            # but if it slips through, we map it cleanly)
-            if node.kind == "summary":
-                return AskBranchesResult(
-                    node_id=action.node_id, action="stop_here"
-                )
-            return AskBranchesResult(node_id=action.node_id, action="stop")
+        # wrap gate: once wrap fires, only verdict actions on the summary node
+        # are accepted. blocks late next/chat on the pre-wrap pending node.
+        if (
+            s.wrap_summary_node_id is not None
+            and action.node_id != s.wrap_summary_node_id
+            and action.action in ("next", "chat")
+        ):
+            return None
 
         if action.action == "stop_here":
             return AskBranchesResult(

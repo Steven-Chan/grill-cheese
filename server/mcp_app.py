@@ -223,6 +223,9 @@ async def present_summary(
         generate_docs=generate_docs,
         docs_reason=docs_reason or None,
     )
+    # swap wrap sentinel for real summary node id so the gate in apply_action
+    # can route picks correctly. no-op if this wasn't a wrap-initiated summary.
+    store.bind_wrap_summary(session_id, node.id)
     await store.broadcast(
         session_id,
         {

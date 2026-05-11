@@ -110,6 +110,11 @@ class Session(BaseModel):
     paused_node_id: Optional[str] = None
     # branch the user pinned chat to (None = node-level chat)
     paused_branch_id: Optional[str] = None
+    # set when the toolbar Wrap-up endpoint fires. Sentinel
+    # `__wrap_pending__` until present_summary lands; then the real summary
+    # node id. Drives the apply_action gate that locks the pre-wrap pending
+    # node. Cleared on continue_grill verdict (session resumes normal).
+    wrap_summary_node_id: Optional[str] = None
     root_node_id: Optional[str] = None
     nodes: dict[str, Node] = Field(default_factory=dict)
     # node_id -> list of hook events attached (Read/Grep/Bash etc)
@@ -121,6 +126,10 @@ class Session(BaseModel):
 
 
 # ---- SSE outbound events (server -> GUI) ----
+# Event types: session_started, session_list, session_ended, session_deleted,
+# session_paused, session_resumed, session_wrap, node_added, node_updated,
+# node_committed, hook_event. session_wrap fires when the toolbar Wrap-up
+# endpoint is hit; payload is empty {} (session id carries the context).
 
 class SseEvent(BaseModel):
     type: str
@@ -155,7 +164,7 @@ class GuiAction(BaseModel):
     branch_id: Optional[str] = None
     note: Optional[str] = None
     action: Literal[
-        "next", "stop", "chat",
+        "next", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ]
 
@@ -186,7 +195,7 @@ class AskBranchesResult(BaseModel):
     chosen_branch_labels: list[str] = Field(default_factory=list)
     note: Optional[str] = None
     action: Literal[
-        "next", "stop", "chat",
+        "next", "chat",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ] = "next"
     # full chosen-path markdown — set only on create_plan / implement_now
