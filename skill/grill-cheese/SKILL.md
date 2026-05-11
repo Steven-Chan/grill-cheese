@@ -35,7 +35,9 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 
 3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth, multi_select?)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
 
-4. **On wake — read the `<channel>` block.** When you see input that contains a `<channel source="grill-cheese" ...>` block (in the user message), parse its JSON content:
+4. **On wake — read the `<channel>` block.** When you see input that contains a `<channel source="grill-cheese" ...>` block (in the user message), parse its JSON content. Two payload shapes:
+
+   **A. node-commit wake (most common):**
    ```
    <channel source="grill-cheese" session_id="ab12cd34" node_id="n3" seq="7">
    {"session_id": "ab12cd34", "node_id": "n3", "seq": 7,
@@ -47,18 +49,28 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
    ```
    - `actions` is the flushed batch. Per-item shape:
      `{node_id, chosen_branch_ids?, chosen_branch_labels?, note?, action, chain_markdown?, chat_branch_id?, chat_branch_label?}`.
-     Per-item action: `next` | `stop` | `chat` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`.
+     Per-item action: `next` | `chat` | `stop_here` | `create_plan` | `implement_now` | `continue_grill`.
      `chosen_branch_ids` / `chosen_branch_labels` are PARALLEL LISTS (same length, same order). Single-mode = length 1; multi-mode = length ≥ 1; may also include a synth `user_authored` branch when the user typed text alongside picks.
      `chat_branch_id` / `chat_branch_label` are set ONLY for `action=chat` (per-row chat scope).
    - **Summary-node payloads also carry `generate_docs: bool` and `docs_reason: string|null`** at the outer level (alongside `actions`, NOT per-action). These echo back the flag/reason you set on `present_summary` so you don't need a snapshot round-trip to decide plan shape on `create_plan`. Absent on non-summary `node_committed` events.
    - `seq` is a per-session monotonic counter. Track `last_seen_seq` mentally. If `seq == last_seen_seq + 1` (or this is the first wake): act on `actions` directly. If `seq` jumped (server restart, missed events): call `get_session_snapshot(session_id)`, replay any flushed nodes you missed, then act.
+
+   **B. session_wrap wake (toolbar Wrap-up):**
+   ```
+   <channel source="grill-cheese" session_id="ab12cd34">
+   {"type": "session_wrap", "session_id": "ab12cd34"}
+   </channel>
+   ```
+   - No `node_id`, no `seq`, no `actions`. Recognise by top-level `type == "session_wrap"`.
+   - Means: user wants a verdict card. The pre-wrap pending node (if any) is now read-only — server gates `next` / `chat` against it until `continue_grill` un-wraps or a terminal verdict ends the session.
+   - Respond by calling `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<latest decision node id, optional>, parent_branch_id=<a chosen branch id, optional>)` and END TURN. Do NOT call `end_session`. Next wake delivers the verdict on the summary node via shape A.
 
 5. **Read the batch as a narrative and decide what to ask next.**
 
    The batch is usually a single terminal click; occasionally it bundles a chat trigger that flushed in the same idle window. The last terminal-class action is the user's final word.
 
    - **`action == "next"`** → user submitted picks. Read `chosen_branch_labels` (LIST). Single-mode = one label; multi-mode = N labels. If a label corresponds to a synth `user_authored` branch (label is the first 60 chars of typed text), treat that segment as the user's literal free-text answer — it carries the same weight as a chat redirect. `note` (if set) is the raw typed text echo and may be slightly longer than the synth label.
-   - **`action == "stop"`** → user clicked **wrap up** in the toolbar — they want a verdict card next, NOT a hard stop. Call `present_summary(session_id, summary=<full chain markdown recap>, parent_node_id=<this node's id>, parent_branch_id=<first chosen branch id from this node, if any>)`. END TURN. The next channel wake delivers the verdict-action; see "Ending" below. Do NOT call `end_session`.
+   - **`type == "session_wrap"`** (shape B wake, no per-action) → user clicked **wrap up** in the toolbar. Call `present_summary(...)` with a full chain markdown recap. END TURN. The next channel wake delivers the verdict-action (shape A); see "Ending" below. Do NOT call `end_session`.
    - **`action == "chat"`** → user paused the grill to chat about this node in CC. Server marked the session paused and locked this node. `chat_branch_id` is set for per-branch chat; None for node-level. **Do NOT call `end_session`**. Do NOT push another node yet — instead reply conversationally in CC. When the user signals "back to grilling", call `apply_chat_result(...)` (see "Chat as decision" below) — that lands the chat outcome and resumes the session.
    - **`action == "stop_here"`** → summary verdict: user approved, no further action. Server has already ended the session. Point user at the export. Do NOT call `end_session`.
    - **`action == "create_plan"`** → summary verdict: user approved, wants a detailed implementation plan first (not code). `chain_markdown` carries the full chosen-path recap. Use it to draft a plan (markdown doc, ordered task list, file-level breakdown). Server has already ended the session. Do NOT call `end_session`.
@@ -91,7 +103,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 - **Respect chat-removed branches.** Read `node.removed_branch_ids` from the snapshot before composing follow-up branches. Do not re-surface a branch that chat removed.
 - **Track `last_seen_seq` per session.** It comes in every `<channel>` block. If the next wake's `seq` is not exactly `last_seen_seq + 1`, fall back to `get_session_snapshot` to catch up — flushed-but-not-delivered nodes will surface as `is_flushed: true` with `committed_actions` populated.
 - **On `chat`: NEVER call `end_session`.** Chat pauses the session, it does not end it. The chatted node is locked (cannot be answered further until apply_chat_result lands). Continue in plain chat; when ready to keep grilling, call `apply_chat_result(...)` — see "Chat as decision".
-- **On `stop` (toolbar wrap-up): NEVER call `end_session` directly.** Always call `present_summary` first — the user gets a verdict card with four options (`stop_here` / `create_plan` / `implement_now` / `continue_grill`) and the session ends only after they pick a terminal verdict (server-side, automatically).
+- **On `session_wrap` (toolbar wrap-up): NEVER call `end_session` directly.** Always call `present_summary` first — the user gets a verdict card with four options (`stop_here` / `create_plan` / `implement_now` / `continue_grill`) and the session ends only after they pick a terminal verdict (server-side, automatically).
 - **For summary verdicts (`stop_here` / `create_plan` / `implement_now`): NEVER call `end_session`.** The server has already ended the session. Calling it again is harmless but pointless. `end_session` remains only as an escape hatch for crashes / explicit bailout.
 
 ## Depth + breadth budget
@@ -147,8 +159,8 @@ End-of-session always goes through a **summary verdict card**. Never call `end_s
 
 Flow:
 
-1. User clicks **wrap up** (toolbar) → channel wake delivers `action == "stop"` on the current pending DecisionNode.
-2. Call `present_summary(session_id, summary=<markdown recap of the chain so far>, parent_node_id=<id of the node that just got the stop>, parent_branch_id=<chosen branch id on that node, if any>)`. Returns `{node_id, instruction}` for the new summary card. END TURN.
+1. User clicks **wrap up** (toolbar) → channel wake delivers a session-level `{type: "session_wrap", session_id}` block (shape B). NO `node_id`, NO `actions[]`. The pre-wrap pending node — if any — is now read-only in the history sidebar; the server gates further `next`/`chat` on it.
+2. Call `present_summary(session_id, summary=<markdown recap of the chain so far>, parent_node_id=<latest decision node id, optional>, parent_branch_id=<a chosen branch id, optional>)`. Returns `{node_id, instruction}` for the new summary card. END TURN.
 3. Next channel wake delivers the verdict action on the summary node:
    - `stop_here` — user approves, no follow-up. Server has ended the session. Point user at the export. If you set `generate_docs=true` on `present_summary`, the export carries a `## Docs flagged but not planned` section with your `docs_reason` — that is the signal preserved for a future re-grill.
    - `create_plan` — user approves, wants a plan first. `chain_markdown` is the full chosen-path recap. Use it to write a detailed implementation plan (markdown doc, ordered tasks, file-level breakdown). If `generate_docs=true` was set, the plan **must** lead with `## Doc changes` (CONTEXT.md edits + new ADR files) and follow with `## Code changes` referencing the doc steps as prerequisites. One plan, ordered. Server has ended the session.
@@ -236,7 +248,11 @@ present_branches(
 #   actions: [{node_id:"n4", chosen_branch_ids:[...], chosen_branch_labels:[...], action:"next"}]
 
 # ... many turns later, user clicks "wrap up" in toolbar ...
-# Channel wakes with action=stop on node n7. Push verdict card.
+# Channel wakes with a session_wrap block (no node_id, no actions):
+#   <channel source="grill-cheese" session_id="ab12cd34">
+#   {"type": "session_wrap", "session_id": "ab12cd34"}
+#   </channel>
+# Push verdict card.
 # This chain pinned terminology (Customer vs Subscriber) and committed to an
 # event-sourced write model — both doc-worthy. Set the flag + provide reason:
 present_summary(
