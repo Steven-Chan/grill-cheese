@@ -471,6 +471,31 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 }
 .gc-branch-chip-label { font-weight: 500; }
 
+/* empty placeholder slot — emitted by Compare/Combine shortcuts. Drag a
+   branch onto it and the drop handler swaps the placeholder out for a real
+   chip. Serializes to "" in the sent message if left unfilled. */
+.gc-chip-placeholder {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 10px;
+  margin: 0 2px;
+  border-radius: 999px;
+  background: transparent;
+  border: 1px dashed var(--gc-edge);
+  color: var(--gc-fg-faint);
+  font-size: 12px;
+  font-style: italic;
+  user-select: none;
+  white-space: nowrap;
+  vertical-align: baseline;
+  transition: border-color 120ms, color 120ms, background 120ms;
+}
+.gc-chip-placeholder:hover {
+  border-color: var(--gc-accent);
+  color: var(--gc-accent);
+  background: rgba(132, 212, 179, 0.06);
+}
+
 /* ---------- inline chat panel (card-weight peer surface below the question card) ---------- */
 .gc-chat-panel {
   margin-top: 16px;

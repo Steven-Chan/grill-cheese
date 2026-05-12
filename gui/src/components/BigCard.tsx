@@ -178,7 +178,25 @@ const BranchChipNode = Node.create({
                 branchId: payload.branch_id,
                 label: payload.label ?? "",
               });
-              view.dispatch(view.state.tr.insert($pos.pos, node));
+              // Replace-on-drop: if the drop landed on an empty placeholder
+              // chip, swap the placeholder out for the real branch chip
+              // instead of inserting alongside it. nodeAfter / nodeBefore
+              // because posAtCoords resolves to the atom boundary.
+              const placeholderType = view.state.schema.nodes.branchChipPlaceholder;
+              let phStart: number | null = null;
+              let phEnd: number | null = null;
+              if ($pos.nodeAfter && $pos.nodeAfter.type === placeholderType) {
+                phStart = $pos.pos;
+                phEnd = $pos.pos + $pos.nodeAfter.nodeSize;
+              } else if ($pos.nodeBefore && $pos.nodeBefore.type === placeholderType) {
+                phStart = $pos.pos - $pos.nodeBefore.nodeSize;
+                phEnd = $pos.pos;
+              }
+              const tr =
+                phStart != null && phEnd != null
+                  ? view.state.tr.replaceWith(phStart, phEnd, node)
+                  : view.state.tr.insert($pos.pos, node);
+              view.dispatch(tr);
               return true;
             },
             dragover: (_view, raw) => {
@@ -192,6 +210,54 @@ const BranchChipNode = Node.create({
         },
       }),
     ];
+  },
+});
+
+// ---------- branch chip placeholder (Tiptap node) ----------
+
+// Empty inline atom that renders as a dashed pill in the editor and serializes
+// to the empty string in the chat message. Drag a branch onto it to swap the
+// placeholder out for a real branch chip (handled in BranchChipNode's drop
+// plugin above). If the user sends without filling it, it just disappears.
+
+function ChipPlaceholderView() {
+  return (
+    <NodeViewWrapper
+      as="span"
+      className="gc-chip-placeholder"
+      contentEditable={false}
+      draggable={false}
+    >
+      drop branch
+    </NodeViewWrapper>
+  );
+}
+
+const BranchChipPlaceholder = Node.create({
+  name: "branchChipPlaceholder",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+  parseHTML() {
+    return [{ tag: "span[data-chip-placeholder]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return [
+      "span",
+      mergeAttributes(
+        { "data-chip-placeholder": "true", class: "gc-chip-placeholder" },
+        HTMLAttributes,
+      ),
+      0,
+    ];
+  },
+  renderText() {
+    return "";
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(ChipPlaceholderView);
   },
 });
 
@@ -511,7 +577,11 @@ function ComposerPanel({
   const [editorEmpty, setEditorEmpty] = useState(true);
 
   const editor = useEditor({
-    extensions: [StarterKit.configure({ heading: false }), BranchChipNode],
+    extensions: [
+      StarterKit.configure({ heading: false }),
+      BranchChipNode,
+      BranchChipPlaceholder,
+    ],
     content: "",
     editorProps: {
       attributes: {
@@ -610,9 +680,24 @@ function ComposerPanel({
     }
   };
 
+  // Plain-text shortcut.
   const applyShortcut = (template: string, name: string) => {
     if (!editor) return;
     editor.chain().focus().clearContent().insertContent(template).run();
+    logShortcutPrefill(sid, node.id, name);
+  };
+
+  // Shortcut with empty branch-chip slots — drag a branch onto a slot to fill
+  // it. Unfilled slots serialize to "" in the sent message.
+  const applyShortcutWithSlots = (
+    parts: Array<string | { slot: true }>,
+    name: string,
+  ) => {
+    if (!editor) return;
+    const content = parts.map((p) =>
+      typeof p === "string" ? { type: "text", text: p } : { type: "branchChipPlaceholder" },
+    );
+    editor.chain().focus().clearContent().insertContent(content).run();
     logShortcutPrefill(sid, node.id, name);
   };
 
@@ -667,7 +752,7 @@ function ComposerPanel({
         <button
           type="button"
           className="gc-btn gc-btn-shortcut"
-          onClick={() => applyShortcut("Explain this question.", "explain")}
+          onClick={() => applyShortcut("Explain this question", "explain")}
           disabled={!!busy || !editor || !!locked}
           title="Prefill: Explain this question"
         >
@@ -677,7 +762,7 @@ function ComposerPanel({
           type="button"
           className="gc-btn gc-btn-shortcut"
           onClick={() =>
-            applyShortcut("Check the current implementation related to this question.", "check_impl")
+            applyShortcut("Check the current implementation related to this question", "check_impl")
           }
           disabled={!!busy || !editor || !!locked}
           title="Prefill: Check the current implementation"
@@ -687,9 +772,14 @@ function ComposerPanel({
         <button
           type="button"
           className="gc-btn gc-btn-shortcut"
-          onClick={() => applyShortcut("Compare ▮ and ▮ (drag branches into the slots).", "compare")}
+          onClick={() =>
+            applyShortcutWithSlots(
+              ["Compare ", { slot: true }, " and ", { slot: true }, "."],
+              "compare",
+            )
+          }
           disabled={!!busy || !editor || !!locked}
-          title="Prefill: Compare ▮ and ▮ (drag branches in)"
+          title="Prefill: Compare [slot] and [slot] (drag branches in)"
         >
           Compare
         </button>
@@ -697,10 +787,13 @@ function ComposerPanel({
           type="button"
           className="gc-btn gc-btn-shortcut"
           onClick={() =>
-            applyShortcut("Can we combine ▮ and ▮ (drag branches into the slots)?", "combine")
+            applyShortcutWithSlots(
+              ["Can we combine ", { slot: true }, " and ", { slot: true }, "?"],
+              "combine",
+            )
           }
           disabled={!!busy || !editor || !!locked}
-          title="Prefill: Combine ▮ and ▮ (drag branches in)"
+          title="Prefill: Combine [slot] and [slot] (drag branches in)"
         >
           Combine
         </button>
