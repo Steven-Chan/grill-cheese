@@ -17,8 +17,11 @@ export function SessionDetailPage() {
     if (sid) bumpMru(sid);
   }, [sid]);
   if (!sid) return null;
+  // key={sid} forces remount on cmd+P nav between sessions — without it,
+  // SessionProvider's useReducer state (incl. state.sid) sticks at the
+  // first sid, so submits POST against the wrong session id.
   return (
-    <SessionProvider sid={sid}>
+    <SessionProvider key={sid} sid={sid}>
       <DetailShell />
     </SessionProvider>
   );
