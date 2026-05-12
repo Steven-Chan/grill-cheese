@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import {
   EditorContent,
@@ -921,14 +922,13 @@ function ComposerPanel({
       const triggerLen = query.length + 1; // "@" + query chars
       const to = $from.pos;
       const from = to - triggerLen;
+      // Viewport coords — popup is portaled to document.body and positioned
+      // with `position: fixed` so the composer's `overflow: hidden` cannot
+      // clip it.
       let coords = { left: 0, top: 0 };
       try {
         const c = editor.view.coordsAtPos(to);
-        const wrapRect = composerWrapRef.current?.getBoundingClientRect();
-        coords = {
-          left: c.left - (wrapRect?.left ?? 0),
-          top: c.bottom - (wrapRect?.top ?? 0),
-        };
+        coords = { left: c.left, top: c.bottom };
       } catch {
         // coordsAtPos can throw mid-transaction; popup stays at last coords.
       }
@@ -1207,33 +1207,37 @@ function ComposerPanel({
         >
           {busy === "send" ? "sending…" : "Send"}
         </button>
-        {mention && mention.open && mentionResults.length > 0 && (
-          <ul
-            className="gc-mention-popup"
-            role="listbox"
-            aria-label="Branch mention picker"
-            style={{ left: mention.coords.left, top: mention.coords.top + 4 }}
-          >
-            {mentionResults.slice(0, 9).map((b, i) => (
-              <li
-                key={b.id}
-                role="option"
-                aria-selected={i === mention.selected}
-                className={`gc-mention-item${i === mention.selected ? " selected" : ""}`}
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  insertMentionChip(b);
-                }}
-                onMouseEnter={() =>
-                  setMention((s) => (s ? { ...s, selected: i } : s))
-                }
-              >
-                <span className="gc-mention-hintkey" aria-hidden="true">{i + 1}</span>
-                <span className="gc-mention-label">{b.label}</span>
-              </li>
-            ))}
-          </ul>
-        )}
+        {mention &&
+          mention.open &&
+          mentionResults.length > 0 &&
+          createPortal(
+            <ul
+              className="gc-mention-popup"
+              role="listbox"
+              aria-label="Branch mention picker"
+              style={{ left: mention.coords.left, top: mention.coords.top + 4 }}
+            >
+              {mentionResults.slice(0, 9).map((b, i) => (
+                <li
+                  key={b.id}
+                  role="option"
+                  aria-selected={i === mention.selected}
+                  className={`gc-mention-item${i === mention.selected ? " selected" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertMentionChip(b);
+                  }}
+                  onMouseEnter={() =>
+                    setMention((s) => (s ? { ...s, selected: i } : s))
+                  }
+                >
+                  <span className="gc-mention-hintkey" aria-hidden="true">{i + 1}</span>
+                  <span className="gc-mention-label">{b.label}</span>
+                </li>
+              ))}
+            </ul>,
+            document.body,
+          )}
       </div>
     </section>
   );

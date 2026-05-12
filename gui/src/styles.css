@@ -1269,12 +1269,11 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   box-shadow: 0 0 0 2px rgba(132, 212, 179, 0.25);
 }
 
-/* @-mention popup. Anchored to the composer input wrapper which is the
-   nearest positioned ancestor. */
-.gc-composer-input { position: relative; }
+/* @-mention popup. Portaled to document.body and positioned with viewport
+   coords so .gc-composer's `overflow: hidden` cannot clip it. */
 .gc-mention-popup {
-  position: absolute;
-  z-index: 30;
+  position: fixed;
+  z-index: 200;
   list-style: none;
   margin: 0;
   padding: 4px;
