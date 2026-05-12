@@ -82,6 +82,13 @@ Source of truth for terminology. Read this before edits that touch the decision-
 - **Disagreement pattern** — agent-narrated theme aggregating multiple disagreed nodes by reading raw question + branch labels + `own_answer` text + chat transcripts. No taxonomy. Multi-pattern grouping is the agent's judgment at retro time.
 - **Retro trigger** — GUI button on `/performance` posts to `POST /api/retro`; server shell-execs cmux to spawn a fresh CC panel running `/retro` (see ADR-0006). Slash command `/retro` works directly from any CC terminal as a fallback.
 
+## First-run surfaces
+
+- **Setup page** — `/setup` GUI route. Houses the Setup checklist + Invocation section. Reachable from `/sessions` empty-state nudge (when 0 sessions AND any red check) and from the Cmd+P palette (always). No toolbar link.
+- **Setup checklist** — fs-probed 3-step row on /setup: skill dir, hook install, MCP entry. Each step is green/red; red steps reveal copy-paste command beneath. Probes run on mount and on `window` `visibilitychange`/`focus`. No polling, no fs watcher. No live channels-pipe verification — fs only.
+- **Invocation section** — non-probed instructional block beneath the Setup checklist. Two copy-blocks (`claude --dangerously-load-development-channels server:grill-cheese`, `/grill-cheese <your plan>`) + one-sentence loop explainer. No example briefs. No demo.
+- **Empty-state nudge** — variant of `/sessions` empty state shown ONLY when `totalRows === 0` AND setup detection has any red step. Short pitch + "Open setup" button → `/setup`. Otherwise empty state reverts to the existing line.
+
 ## Ambiguities flagged
 
 - The legacy GUI wire field `note` was overloaded — historically used as both "user's own answer" and "annotation on a branch pick". v1 of the redesign collapses this onto the new `own_answer` field. Old session JSONs may still carry `note`; the rehydrate path silently ignores unknown fields (`model_config = {"extra": "ignore"}`).
