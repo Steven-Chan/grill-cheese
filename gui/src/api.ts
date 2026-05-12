@@ -139,6 +139,39 @@ export async function postJumpToCmux(session_id: string): Promise<void> {
 }
 
 
+// Retrospective trigger — POST /api/retro {project}. Server peeks the
+// disagreement window; returns {empty:true} (no cmux launch) when nothing
+// to retro, else shell-execs cmux to spawn a new CC panel with /retro.
+// See ADR-0006.
+export interface RetroResult {
+  ok: boolean;
+  empty: boolean;
+  session_count?: number;
+  disagreed_count?: number;
+  err?: string;
+  fallback?: string;
+}
+
+export async function postRetro(project: string): Promise<RetroResult> {
+  const res = await fetch("/api/retro", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ project }),
+  });
+  let payload: RetroResult = { ok: false, empty: false };
+  try {
+    payload = await res.json();
+  } catch {
+    // fall through
+  }
+  if (!res.ok && !payload.err) {
+    payload.err = `retro failed: ${res.status}`;
+  }
+  payload.ok = res.ok && !!payload.ok;
+  return payload;
+}
+
+
 // Toolbar Wrap-up signal. Session-level: no node bound. Server emits
 // session_wrap SSE; skill responds with present_summary. Throws
 // ActionRejection on 4xx for consistent toast handling.

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchPerformance } from "../api";
+import { fetchPerformance, postRetro } from "../api";
+import type { RetroResult } from "../api";
 import { ScoreChip } from "../components/ScoreChip";
 import type { PerformanceEntry } from "../types";
 
@@ -22,6 +23,7 @@ export function PerformancePage() {
 
   const { today, history } = useMemo(() => groupByDate(entries ?? []), [entries]);
   const todayMean = useMemo(() => meanScore(today), [today]);
+  const projects = useMemo(() => uniqueProjects(entries ?? []), [entries]);
 
   return (
     <div className="gc-page gc-perf-page">
@@ -29,6 +31,7 @@ export function PerformancePage() {
         <Link to="/sessions" className="gc-back-link">← sessions</Link>
         <h1>Performance</h1>
         <p className="gc-dim">Agent recommendation pick rate per session.</p>
+        {projects.length > 0 && <RetroBar projects={projects} />}
       </header>
 
       {error && <div className="gc-empty">failed to load: {error}</div>}
@@ -64,6 +67,62 @@ export function PerformancePage() {
             <HistoryGroups groups={history} />
           </section>
         </>
+      )}
+    </div>
+  );
+}
+
+interface RetroToast {
+  kind: "ok" | "empty" | "err";
+  msg: string;
+}
+
+function RetroBar({ projects }: { projects: string[] }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [toast, setToast] = useState<RetroToast | null>(null);
+
+  async function run(project: string) {
+    setBusy(project);
+    setToast(null);
+    try {
+      const r: RetroResult = await postRetro(project);
+      if (r.empty) {
+        setToast({ kind: "empty", msg: `${project}: nothing to retro since last marker.` });
+      } else if (r.ok) {
+        setToast({
+          kind: "ok",
+          msg: `${project}: launched retro on ${r.disagreed_count ?? 0} disagreed nodes across ${r.session_count ?? 0} sessions.`,
+        });
+      } else {
+        const fallback = r.fallback ? ` ${r.fallback}` : "";
+        setToast({ kind: "err", msg: `${project}: ${r.err || "retro failed"}.${fallback}` });
+      }
+    } catch (e) {
+      setToast({ kind: "err", msg: `${project}: ${String(e)}` });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="gc-perf-retro-bar">
+      <span className="gc-perf-retro-label">retrospective:</span>
+      {projects.map((p) => (
+        <button
+          key={p}
+          type="button"
+          className="gc-perf-retro-btn"
+          onClick={() => run(p)}
+          disabled={busy !== null}
+          aria-busy={busy === p}
+        >
+          {busy === p ? "launching…" : p}
+        </button>
+      ))}
+      {toast && (
+        <span className={`gc-perf-retro-toast gc-perf-retro-toast-${toast.kind}`} role="status">
+          {toast.msg}
+        </span>
       )}
     </div>
   );
@@ -166,6 +225,14 @@ function groupByDate(entries: PerformanceEntry[]): {
     .map(([date, es]) => ({ date, entries: es }))
     .sort((a, b) => (a.date < b.date ? 1 : -1));
   return { today, history };
+}
+
+function uniqueProjects(entries: PerformanceEntry[]): string[] {
+  const seen = new Set<string>();
+  for (const e of entries) {
+    if (e.project) seen.add(e.project);
+  }
+  return Array.from(seen).sort();
 }
 
 function meanScore(entries: PerformanceEntry[]): number | null {
