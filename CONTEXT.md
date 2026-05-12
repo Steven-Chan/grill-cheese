@@ -36,6 +36,14 @@ Source of truth for terminology. Read this before edits that touch the decision-
 
 - **Implicit decision** — decision Claude made silently, recorded via `record_implicit_decision`. Surfaced in a separate lane. Tagged with `[CONTEXT]` / `[ADR]` prefixes when it's a doc-worthy moment.
 
+## Retrospective surfaces
+
+- **Decision map** — read-only pan/zoom canvas overlay on the summary card. Visualises the whole grilled session for review: design space (abandoned branches), shape (skim long sessions), and chat side-conversations (refines/redirects). Toggle from the summary card header; renders full-viewport. NOT a navigator — no click-to-jump, no popovers. Encoding does all the work. The sole sanctioned xyflow+dagre surface in the codebase, scoped to retrospective review (see ADR-0002).
+  - **Map node** — every `DecisionNode` / summary node / implicit decision in the session. Implicit decisions render as small child nodes attached to their `parent_node_id`; doc-tagged ones (`decision` starts with `[ADR]` or `[CONTEXT]`) carry a 📍 marker.
+  - **Map edge** — every entry in a parent node's `branches`. Edge label = branch label; classification follows the four-state matrix below.
+  - **Map encoding** — chosen branch edge: solid full-colour. Abandoned: 30% opacity gray. Chat-added (in `pending_proposals.ops.adds` history): dashed green. Chat-removed (id in `removed_branch_ids`): strikethrough red. Redirected node (`redirected === true`): dashed red border on the node itself.
+
 ## Ambiguities flagged
 
 - The legacy GUI wire field `note` was overloaded — historically used as both "user's own answer" and "annotation on a branch pick". v1 of the redesign collapses this onto the new `own_answer` field. Old session JSONs may still carry `note`; the rehydrate path silently ignores unknown fields (`model_config = {"extra": "ignore"}`).
+- The CLAUDE.md "no xyflow/dagre/zustand — single-card UI, not a tree canvas" guidance applies to the **active** decision surface (`BigCard`) only. The retrospective **Decision map** is the lone sanctioned canvas, opted-in case-by-case via ADR (see ADR-0002).

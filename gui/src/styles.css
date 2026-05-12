@@ -926,3 +926,242 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 }
 .gc-toast-x { background: none; border: none; color: var(--gc-fg-dim); font: inherit; cursor: pointer; font-size: 18px; padding: 0; }
 .gc-toast-x:hover { color: var(--gc-fg); }
+
+/* ---------- decision map (retrospective overlay on summary card) ---------- */
+/* Sole xyflow + dagre surface — see ADR-0002. */
+
+.gc-summary-map-toggle {
+  margin-left: auto;
+}
+
+.gc-decision-map-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.gc-decision-map-panel {
+  width: min(95vw, 1400px);
+  height: min(92vh, 900px);
+  background: var(--gc-bg-elev);
+  border: 1px solid var(--gc-edge);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+}
+
+.gc-decision-map-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--gc-edge);
+  flex: 0 0 auto;
+}
+
+.gc-decision-map-title {
+  font-family: var(--gc-serif);
+  font-size: 14px;
+  color: var(--gc-fg-dim);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gc-decision-map-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.gc-decision-map-loading {
+  padding: 24px;
+}
+
+.gc-decision-map,
+.gc-decision-map-empty {
+  width: 100%;
+  height: 100%;
+  background: var(--gc-bg);
+}
+
+.gc-decision-map-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* xyflow background dots — match the dark theme. */
+.gc-decision-map .react-flow__background {
+  background: var(--gc-bg);
+}
+.gc-decision-map .react-flow__background pattern circle {
+  fill: var(--gc-edge);
+}
+
+/* xyflow controls — match the toolbar buttons. */
+.gc-decision-map .react-flow__controls {
+  background: var(--gc-bg-elev);
+  border: 1px solid var(--gc-edge);
+  border-radius: 4px;
+}
+.gc-decision-map .react-flow__controls-button {
+  background: var(--gc-bg-elev);
+  border-bottom: 1px solid var(--gc-edge);
+  color: var(--gc-fg);
+  fill: var(--gc-fg);
+}
+.gc-decision-map .react-flow__controls-button:hover {
+  background: var(--gc-bg-card);
+}
+
+.gc-decision-map .react-flow__minimap {
+  background: var(--gc-bg-elev);
+  border: 1px solid var(--gc-edge);
+}
+
+/* ---------- map nodes ---------- */
+
+.gc-map-node {
+  font-family: var(--gc-mono);
+  font-size: 12px;
+  color: var(--gc-fg);
+  background: var(--gc-bg-card);
+  border: 1px solid var(--gc-edge);
+  border-radius: 4px;
+  padding: 8px 12px;
+  text-align: center;
+  line-height: 1.35;
+  /* Hide xyflow's default handles — every node has them for edge wiring
+     but they're not interactive (read-only map). */
+}
+.gc-map-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.gc-map-node-decision {
+  width: 240px;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gc-map-node-decision.gc-map-node-redirected {
+  border: 1.5px dashed var(--gc-warn);
+  opacity: 0.7;
+}
+
+.gc-map-node-summary {
+  width: 180px;
+  min-height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gc-bg-elev);
+  border-color: var(--gc-rec);
+}
+
+.gc-map-node-implicit {
+  width: 160px;
+  min-height: 40px;
+  font-size: 11px;
+  color: var(--gc-fg-dim);
+  background: var(--gc-bg-elev);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  text-align: left;
+}
+.gc-map-implicit-marker {
+  flex: 0 0 auto;
+}
+.gc-map-implicit-label {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gc-map-stub {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px dashed var(--gc-fg-faint);
+  opacity: 0.4;
+}
+/* Stub gets no body — xyflow still wraps it in a node container. Scope to
+   the decision-map surface so any future xyflow usage stays isolated. */
+.gc-decision-map .react-flow__node[data-type="stub"] {
+  background: transparent;
+  border: none;
+}
+
+/* ---------- map edges ---------- */
+/* Encoding (see CONTEXT.md "Decision map" + ADR-0002):
+   - chosen        → solid full-colour (warn/orange = the cheese palette spine)
+   - abandoned     → 30% opacity gray (road not taken)
+   - chat-removed  → strikethrough red (soft-deleted via chat refine)
+   - user-authored → solid green (Own Answer synth — user typed it)
+   - implicit      → thin dashed gray (silent decision link)                  */
+
+.gc-map-edge .react-flow__edge-path {
+  stroke-width: 1.5px;
+}
+
+.gc-map-edge-chosen .react-flow__edge-path {
+  stroke: var(--gc-warn);
+  stroke-width: 2.25px;
+}
+
+.gc-map-edge-abandoned .react-flow__edge-path {
+  stroke: var(--gc-fg-faint);
+  stroke-opacity: 0.55;
+  stroke-dasharray: 0;
+}
+
+.gc-map-edge-chat-removed .react-flow__edge-path {
+  stroke: #d9534f;
+  stroke-dasharray: 4 3;
+  stroke-width: 2px;
+}
+
+.gc-map-edge-user-authored .react-flow__edge-path {
+  stroke: var(--gc-accent);
+  stroke-width: 2.25px;
+}
+
+.gc-map-edge-implicit .react-flow__edge-path {
+  stroke: var(--gc-fg-faint);
+  stroke-dasharray: 2 3;
+  stroke-width: 1px;
+  opacity: 0.5;
+}
+
+/* xyflow edge label boxes — match the dark theme. */
+.gc-decision-map .react-flow__edge-textbg {
+  fill: var(--gc-bg);
+}
+.gc-decision-map .react-flow__edge-text {
+  fill: var(--gc-fg-dim);
+  font-family: var(--gc-mono);
+  font-size: 10px;
+}
+.gc-map-edge-chosen .react-flow__edge-text {
+  fill: var(--gc-warn);
+}
+.gc-map-edge-chat-removed .react-flow__edge-text {
+  fill: #d9534f;
+  text-decoration: line-through;
+}
+.gc-map-edge-user-authored .react-flow__edge-text {
+  fill: var(--gc-accent);
+}
