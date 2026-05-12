@@ -303,7 +303,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-branch-rationale { color: var(--gc-fg-dim); font-size: 12px; }
 
 .gc-bigcard-note textarea,
-.gc-bigcard-own-answer textarea {
+.gc-own-answer-textarea {
   width: 100%;
   resize: vertical;
   background: var(--gc-bg-card);
@@ -312,12 +312,21 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   border-radius: 6px;
   padding: 10px 12px;
   font: inherit;
-  margin-bottom: 16px;
 }
+.gc-bigcard-note textarea { margin-bottom: 16px; }
 .gc-bigcard-note textarea:focus,
-.gc-bigcard-own-answer textarea:focus { outline: none; border-color: var(--gc-accent); }
-.gc-bigcard-own-answer { display: flex; flex-direction: column; gap: 6px; }
+.gc-own-answer-textarea:focus { outline: none; border-color: var(--gc-accent); }
+.gc-own-answer-textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 .gc-own-answer-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+/* Own-answer row in the radio group — radio + textarea are siblings, not
+   nested under a single <label> (would mis-bind the label to the radio
+   and break textarea click-to-caret). The .gc-branch-text div takes the
+   remaining row width and stacks label + textarea vertically. */
+.gc-branch-own > .gc-branch-text { flex: 1; }
+.gc-branch-own .gc-branch-label { cursor: pointer; }
+.gc-branch-own .gc-own-answer-textarea { margin-top: 4px; }
+.gc-branch-own > input[type="radio"] { margin-top: 4px; accent-color: var(--gc-accent); }
 
 /* per-branch "use as draft" button — drops branch into Own Answer textarea */
 .gc-branch { position: relative; }
@@ -383,7 +392,8 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 }
 .gc-composer-clear:hover:not(:disabled) { color: var(--gc-warn); }
 .gc-composer-list {
-  max-height: 320px;
+  min-height: 60px;
+  max-height: 360px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -415,21 +425,34 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   align-items: stretch;
   gap: 8px;
 }
+/* Tiptap renders <EditorContent> as a wrapping <div> that contains the
+   ProseMirror root. That wrapper is the flex child of .gc-composer-input,
+   not the ProseMirror node itself. */
+.gc-composer-input .gc-composer-editor-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
 .gc-composer-input .gc-composer-editor {
   flex: 1;
-  min-height: 64px;
-  max-height: 200px;
+  width: 100%;
+  min-height: 120px;
+  max-height: 320px;
   overflow-y: auto;
   background: var(--gc-bg-card);
   border: 1px solid var(--gc-edge);
   border-radius: 6px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   font: inherit;
   outline: none;
 }
 .gc-composer-input .gc-composer-editor:focus { border-color: var(--gc-accent); }
 .gc-composer-input .gc-composer-editor p { margin: 0; }
 .gc-composer-send { align-self: flex-end; }
+
+/* Settled — chat is read-only after the parent decision commits. */
+.gc-composer-locked { opacity: 0.55; }
+.gc-composer-locked .gc-composer-editor { cursor: not-allowed; background: transparent; }
 
 /* branch chip inserted into the composer (drag-drop or click-add). */
 .gc-branch-chip {

@@ -197,6 +197,12 @@ const BranchChipNode = Node.create({
 
 // ---------- decision card ----------
 
+// Synthetic id for the "your own answer" radio in single-choice mode.
+// Lives in the same `picked` set as branch ids so the radio group stays
+// mutually exclusive. Stripped before sending — server only sees real
+// branch_ids + own_answer string.
+const OWN_ANSWER_ID = "__own_answer__";
+
 function DecisionCard({
   node,
   sid,
@@ -227,20 +233,25 @@ function DecisionCard({
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const ownAnswerRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // reset selection when node identity changes
+  // reset selection when node identity changes only.
+  // `live` is recomputed (new array ref) on every node_updated SSE — including
+  // chat-message broadcasts. Including `live` in deps would wipe the user's
+  // in-progress own-answer text mid-typing. node.id changing is the only
+  // case that warrants a full reset; the initializer covers the branch list.
   useEffect(() => {
     setPicked(() => {
       const s = new Set<string>();
       if (multi) {
-        for (const b of live) if (b.is_recommended) s.add(b.id);
+        for (const b of node.branches) if (b.is_recommended && !removed.has(b.id)) s.add(b.id);
       } else {
-        const rec = live.find((b) => b.is_recommended);
+        const rec = node.branches.find((b) => b.is_recommended && !removed.has(b.id));
         if (rec) s.add(rec.id);
       }
       return s;
     });
     setOwnAnswer("");
-  }, [node.id, multi, live]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id]);
 
   const togglePick = (id: string) => {
     if (multi) {
@@ -252,10 +263,25 @@ function DecisionCard({
       });
     } else {
       setPicked(new Set([id]));
+      if (id === OWN_ANSWER_ID) {
+        // focus textarea so user can immediately type
+        setTimeout(() => ownAnswerRef.current?.focus(), 0);
+      }
     }
   };
 
-  const canSubmit = picked.size > 0 || ownAnswer.trim().length > 0;
+  const ownAnswerSelected = picked.has(OWN_ANSWER_ID);
+  const realPicked = useMemo(
+    () => Array.from(picked).filter((id) => id !== OWN_ANSWER_ID),
+    [picked],
+  );
+  // single-mode: own-answer radio must be picked + textarea non-empty, OR a branch picked.
+  // multi-mode: any branch picked OR non-empty own-answer text (independent of any radio).
+  const canSubmit = multi
+    ? realPicked.length > 0 || ownAnswer.trim().length > 0
+    : ownAnswerSelected
+      ? ownAnswer.trim().length > 0
+      : realPicked.length > 0;
   // committed = answer landed. forceLocked = fallback render (no live pending).
   // Chat is non-blocking (ADR-0001) so chat_open/messages do NOT lock the card.
   const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
@@ -263,6 +289,9 @@ function DecisionCard({
   const useAsDraft = (label: string, rationale: string) => {
     const text = rationale ? `${label} — ${rationale}` : label;
     setOwnAnswer(text);
+    // single-mode: auto-pick the own-answer radio so the draft wins the
+    // mutual-exclusion. multi-mode: textarea is independent — leave picks alone.
+    if (!multi) setPicked(new Set([OWN_ANSWER_ID]));
     // tick to ensure render lands before focus
     setTimeout(() => {
       const el = ownAnswerRef.current;
@@ -273,13 +302,34 @@ function DecisionCard({
     }, 0);
   };
 
+  // single-mode: typing auto-picks own-answer radio; clearing reverts to
+  // recommended branch (or empty). Without the revert, clearing leaves
+  // own-answer picked + empty text → Next disabled with no obvious unstick.
+  // multi-mode: textarea is already independent of branch checkboxes.
+  const handleOwnAnswerChange = (text: string) => {
+    setOwnAnswer(text);
+    if (multi) return;
+    const hasText = text.trim().length > 0;
+    if (hasText && !ownAnswerSelected) {
+      setPicked(new Set([OWN_ANSWER_ID]));
+    } else if (!hasText && ownAnswerSelected) {
+      const rec = live.find((b) => b.is_recommended);
+      setPicked(rec ? new Set([rec.id]) : new Set());
+    }
+  };
+
   const send = async (action: ActionKind) => {
     if (busy) return;
     setBusy(action);
     try {
+      // single-mode: send EITHER branch_ids OR own_answer (whichever radio
+      // is picked), never both. multi-mode: send both as configured.
+      const branchIds = realPicked;
+      const ownText = ownAnswer.trim();
+      const includeOwn = multi ? ownText.length > 0 : ownAnswerSelected && ownText.length > 0;
       await postAction(sid, node.id, action, {
-        branch_ids: Array.from(picked),
-        own_answer: ownAnswer.trim() || undefined,
+        branch_ids: branchIds,
+        own_answer: includeOwn ? ownText : undefined,
       });
     } catch (e) {
       const rej = e as ActionRejection;
@@ -349,22 +399,48 @@ function DecisionCard({
               </li>
             );
           })}
-        </ul>
+          {/* Own-answer row — single mode renders an exclusive radio in the same
+              group so picking it deselects branches above. multi mode skips the
+              radio (own answer is independent of branch checkboxes).
 
-        <div className="gc-bigcard-own-answer">
-          <label className="gc-own-answer-label gc-dim" htmlFor={`own-answer-${node.id}`}>
-            Your own answer (when no branch fits)
-          </label>
-          <textarea
-            id={`own-answer-${node.id}`}
-            ref={ownAnswerRef}
-            rows={2}
-            placeholder="type your answer, or drag a branch's “use as draft” into here…"
-            value={ownAnswer}
-            onChange={(e) => setOwnAnswer(e.target.value)}
-            disabled={locked}
-          />
-        </div>
+              The radio + textarea are NOT wrapped in a single <label>: a label
+              with two labelable descendants implicitly binds to the first
+              (the radio), which makes a click on the textarea fire the radio's
+              click handler and (in some browsers) skip placing the caret.
+              Each control owns its own label via htmlFor. */}
+          <li
+            className={`gc-branch gc-branch-own${ownAnswerSelected ? " checked" : ""}`}
+          >
+            {!multi && (
+              <input
+                id={`own-radio-${node.id}`}
+                type="radio"
+                name={`branch-${node.id}`}
+                checked={ownAnswerSelected}
+                disabled={locked}
+                onChange={() => togglePick(OWN_ANSWER_ID)}
+              />
+            )}
+            <div className="gc-branch-text">
+              <label
+                htmlFor={multi ? `own-answer-${node.id}` : `own-radio-${node.id}`}
+                className="gc-branch-label"
+              >
+                Your own answer {multi && <span className="gc-dim">(optional, in addition to picks)</span>}
+              </label>
+              <textarea
+                id={`own-answer-${node.id}`}
+                ref={ownAnswerRef}
+                className="gc-own-answer-textarea"
+                rows={2}
+                placeholder="type your answer, or drag a branch's “use as draft” into here…"
+                value={ownAnswer}
+                onChange={(e) => handleOwnAnswerChange(e.target.value)}
+                disabled={locked}
+              />
+            </div>
+          </li>
+        </ul>
 
         <div className="gc-bigcard-actions">
           <button
@@ -383,7 +459,7 @@ function DecisionCard({
           </div>
         )}
       </article>
-      <ComposerPanel node={node} sid={sid} onToast={onToast} />
+      <ComposerPanel node={node} sid={sid} onToast={onToast} locked={locked} />
     </>
   );
 }
@@ -394,10 +470,12 @@ function ComposerPanel({
   node,
   sid,
   onToast,
+  locked,
 }: {
   node: DecisionNode;
   sid: string;
   onToast: (msg: string) => void;
+  locked?: boolean;
 }) {
   const messages = node.chat_messages ?? [];
   const proposals = node.pending_proposals ?? [];
@@ -436,6 +514,13 @@ function ComposerPanel({
       },
     },
   });
+
+  // Lock the editor when the parent decision is settled — chat is non-blocking
+  // but once the branch commits, the thread is read-only.
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(!locked);
+  }, [editor, locked]);
 
   // Reset pick when a fresh proposal batch lands (whole list replaced).
   const batchKey = proposals.map((p) => p.proposal_id).join(",");
@@ -524,10 +609,11 @@ function ComposerPanel({
   };
 
   return (
-    <section className="gc-composer">
+    <section className={`gc-composer${locked ? " gc-composer-locked" : ""}`}>
       <header className="gc-composer-head">
         <span className="gc-composer-title">chat</span>
-        {(messages.length > 0 || proposals.length > 0) && (
+        {locked && <span className="gc-dim">settled — chat closed</span>}
+        {!locked && (messages.length > 0 || proposals.length > 0) && (
           <button
             type="button"
             className="gc-btn gc-btn-toolbar gc-composer-clear"
@@ -546,7 +632,7 @@ function ComposerPanel({
           pickedId={pickedProposalId}
           onPick={setPickedProposalId}
           onAccept={accept}
-          busy={busy === "accept"}
+          busy={busy === "accept" || !!locked}
         />
       )}
       <div ref={listRef} className="gc-composer-list">
@@ -574,7 +660,7 @@ function ComposerPanel({
           type="button"
           className="gc-btn gc-btn-shortcut"
           onClick={() => applyShortcut("Explain this question.", "explain")}
-          disabled={!!busy || !editor}
+          disabled={!!busy || !editor || !!locked}
           title="Prefill: Explain this question"
         >
           Explain
@@ -585,7 +671,7 @@ function ComposerPanel({
           onClick={() =>
             applyShortcut("Check the current implementation related to this question.", "check_impl")
           }
-          disabled={!!busy || !editor}
+          disabled={!!busy || !editor || !!locked}
           title="Prefill: Check the current implementation"
         >
           Check impl
@@ -594,7 +680,7 @@ function ComposerPanel({
           type="button"
           className="gc-btn gc-btn-shortcut"
           onClick={() => applyShortcut("Compare ▮ and ▮ (drag branches into the slots).", "compare")}
-          disabled={!!busy || !editor}
+          disabled={!!busy || !editor || !!locked}
           title="Prefill: Compare ▮ and ▮ (drag branches in)"
         >
           Compare
@@ -605,18 +691,22 @@ function ComposerPanel({
           onClick={() =>
             applyShortcut("Can we combine ▮ and ▮ (drag branches into the slots)?", "combine")
           }
-          disabled={!!busy || !editor}
+          disabled={!!busy || !editor || !!locked}
           title="Prefill: Combine ▮ and ▮ (drag branches in)"
         >
           Combine
         </button>
       </div>
       <div className="gc-composer-input">
-        <EditorContent editor={editor} />
+        {/* EditorContent wraps the ProseMirror root in its OWN div — that
+            wrapper is the actual flex child here, so it must carry flex: 1
+            and min-width: 0. Otherwise it collapses to ProseMirror's
+            intrinsic content width and the editor looks 30px wide. */}
+        <EditorContent editor={editor} className="gc-composer-editor-wrap" />
         <button
           type="button"
           className="gc-btn gc-btn-primary gc-composer-send"
-          disabled={!!busy || !editor || isEditorEmpty(editor)}
+          disabled={!!busy || !editor || isEditorEmpty(editor) || !!locked}
           onClick={() => void sendCurrent()}
         >
           {busy === "send" ? "sending…" : "Send"}
