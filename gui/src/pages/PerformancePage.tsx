@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchPerformance, fetchRetroPreview, postRetro } from "../api";
 import type { RetroPreview, RetroResult } from "../api";
@@ -126,6 +126,8 @@ function RetroPreviewModal({ project, onClose, onResult }: RetroPreviewModalProp
   const [preview, setPreview] = useState<RetroPreview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const lastFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,6 +136,16 @@ function RetroPreviewModal({ project, onClose, onResult }: RetroPreviewModalProp
       .catch((e) => { if (!cancelled) setErr(String(e)); });
     return () => { cancelled = true; };
   }, [project]);
+
+  // Focus management: save trigger element, move focus into modal, restore
+  // on unmount. Matches CheatsheetModal pattern.
+  useEffect(() => {
+    lastFocusRef.current = document.activeElement as HTMLElement | null;
+    closeRef.current?.focus();
+    return () => {
+      lastFocusRef.current?.focus?.();
+    };
+  }, []);
 
   // Esc-to-close on modal mount. Removed on unmount.
   useEffect(() => {
@@ -172,7 +184,13 @@ function RetroPreviewModal({ project, onClose, onResult }: RetroPreviewModalProp
       <div className="gc-retro-modal-card">
         <header className="gc-retro-modal-header">
           <h2>retrospective preview — <code>{project}</code></h2>
-          <button type="button" className="gc-retro-modal-close" onClick={onClose} aria-label="Close">×</button>
+          <button
+            ref={closeRef}
+            type="button"
+            className="gc-retro-modal-close"
+            onClick={onClose}
+            aria-label="Close"
+          >×</button>
         </header>
         <div className="gc-retro-modal-body">
           {err && <p className="gc-retro-modal-err">failed to load: {err}</p>}

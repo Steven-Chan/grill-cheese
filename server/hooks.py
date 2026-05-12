@@ -511,15 +511,17 @@ async def retro_preview_endpoint(request: Request) -> Response:
 
 
 async def retro_endpoint(request: Request) -> Response:
-    """POST /api/retro {project, repo_root} — GUI Retro button trigger.
+    """POST /api/retro {project, repo_root} — GUI Retro button trigger
+    (called from the preview modal's Launch button; see ADR-0005 Revisions).
 
     Checks the retro marker window for disagreement data. If empty, returns
     {empty: true} so the GUI shows an inline toast without launching a new
     CC session. Otherwise resolves a cmux binary, shell-execs a fresh panel
     running `claude /retro <project>`. See ADR-0006.
 
-    The actual `start_retro_session` MCP tool is called by the skill once
-    the new CC panel boots — this endpoint just gets the user there.
+    The retro skill in the spawned CC panel calls `get_retro_input` to
+    fetch the structured payload, composes its own brief, then calls
+    `start_session(kind="retro")` — this endpoint just gets the user there.
     """
     from . import retro as retro_mod
 
@@ -538,8 +540,9 @@ async def retro_endpoint(request: Request) -> Response:
         repo_root = str(Path(__file__).resolve().parent.parent)
 
     # peek: skip cmux spawn when the window is empty so users don't get a
-    # CC panel for a no-op retro. The skill would do the same check inside
-    # start_retro_session, but doing it here saves a panel launch.
+    # CC panel for a no-op retro. The skill will also see is_empty=true
+    # from get_retro_input and bail before start_session, but doing it
+    # here saves a panel launch entirely.
     since = retro_mod.read_marker(project)
     disagreed, session_count = retro_mod.collect_disagreement_data(project, since)
     if session_count == 0 or len(disagreed) == 0:
