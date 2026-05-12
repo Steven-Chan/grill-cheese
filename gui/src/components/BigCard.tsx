@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import {
@@ -341,9 +341,11 @@ function DecisionCard({
   // focused row picks+submits in single-mode, `Space` toggles, `Cmd+Enter`
   // submits in multi-mode. Initial focus = first ★ recommended branch so
   // the common "accept the recommendation" path is a single keystroke.
+  // Default focus: first ★ recommended branch, else first live branch, else
+  // own-answer (the only navigable target when chat removed every branch).
   const initialFocusId = useMemo(() => {
     const rec = live.find((b) => b.is_recommended);
-    return rec?.id ?? live[0]?.id ?? null;
+    return rec?.id ?? live[0]?.id ?? OWN_ANSWER_ID;
   }, [live]);
   const [focusedBranchId, setFocusedBranchId] = useState<string | null>(initialFocusId);
   // Reset focus when node identity changes. Also auto-focus the row in the
@@ -367,12 +369,23 @@ function DecisionCard({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.id]);
-  // If chat soft-removes the currently-focused branch, hop to first live row.
+  // If chat soft-removes the currently-focused branch, hop to first live row
+  // (or own-answer when everything got removed). OWN_ANSWER_ID is synthetic
+  // — always valid, never in `live`. DOM-focus the fallback row so the
+  // visible focus ring follows the state change (matches the focusByIdx
+  // pattern in onListKeyDown).
   useEffect(() => {
+    if (focusedBranchId === OWN_ANSWER_ID) return;
     if (focusedBranchId && !live.some((b) => b.id === focusedBranchId)) {
-      setFocusedBranchId(live[0]?.id ?? null);
+      const next = live[0]?.id ?? OWN_ANSWER_ID;
+      setFocusedBranchId(next);
+      // Yield to React commit so the new tabIndex=0 lands before .focus().
+      window.setTimeout(
+        () => document.getElementById(`branch-${node.id}-${next}`)?.focus(),
+        0,
+      );
     }
-  }, [focusedBranchId, live]);
+  }, [focusedBranchId, live, node.id]);
   // Ref-mirror so the composer Esc callback always reads the latest value
   // without re-creating the callback on every re-render.
   const focusedBranchIdRef = useRef<string | null>(focusedBranchId);
@@ -433,6 +446,90 @@ function DecisionCard({
   // Chat is non-blocking (ADR-0001) so chat_open/messages do NOT lock the card.
   const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
+  // Two-phase lock transition. Phase 1 fades chrome (~180ms), phase 2
+  // restyles chosen + reorders + dims rejected (~280ms). Fresh mounts that
+  // are already locked (history pin, fallback render) skip the animation
+  // and land in phase 2 directly.
+  const [lockPhase, setLockPhase] = useState<0 | 1 | 2>(locked ? 2 : 0);
+  const prevLockedRef = useRef(locked);
+  useEffect(() => {
+    if (locked && !prevLockedRef.current) {
+      setLockPhase(1);
+      const t = window.setTimeout(() => setLockPhase(2), 180);
+      prevLockedRef.current = true;
+      return () => window.clearTimeout(t);
+    }
+    if (!locked && prevLockedRef.current) {
+      setLockPhase(0);
+      prevLockedRef.current = false;
+    }
+  }, [locked]);
+
+  // Display order: in phase 2, chosen branches lift to the top, rejected
+  // sink below a divider. Drives both the rendered <li> sequence and
+  // the FLIP measurement (chosen ids move up by N row heights).
+  const chosenIdSet = useMemo(
+    () => new Set(node.chosen_branch_ids ?? []),
+    [node.chosen_branch_ids],
+  );
+  type Row =
+    | { kind: "branch"; b: Branch; role: "chosen" | "rejected" | "none" }
+    | { kind: "divider" };
+  const displayBranches = useMemo<Row[]>(() => {
+    if (lockPhase < 2 || chosenIdSet.size === 0) {
+      return live.map<Row>((b) => ({ kind: "branch", b, role: "none" }));
+    }
+    const chosen = live.filter((b) => chosenIdSet.has(b.id));
+    const rejected = live.filter((b) => !chosenIdSet.has(b.id));
+    const rows: Row[] = chosen.map<Row>((b) => ({ kind: "branch", b, role: "chosen" }));
+    if (rejected.length > 0) {
+      rows.push({ kind: "divider" });
+      for (const b of rejected) rows.push({ kind: "branch", b, role: "rejected" });
+    }
+    return rows;
+  }, [live, lockPhase, chosenIdSet]);
+
+  // FLIP: capture rects BEFORE the reorder commits, then on the phase-2
+  // render apply inverse translateY + animate to identity. Single effect
+  // so we don't race a "capture every render" effect that would overwrite
+  // prev rects with post-reorder layout. Branch keys stay stable across
+  // reorder so refs survive.
+  const branchRefs = useRef<Map<string, HTMLLIElement>>(new Map());
+  const prevRects = useRef<Map<string, DOMRect>>(new Map());
+  useLayoutEffect(() => {
+    if (lockPhase < 2) {
+      const rects = new Map<string, DOMRect>();
+      branchRefs.current.forEach((el, id) => {
+        rects.set(id, el.getBoundingClientRect());
+      });
+      prevRects.current = rects;
+      return;
+    }
+    const prev = prevRects.current;
+    if (prev.size === 0) return; // fresh-mount locked: snap, no anim
+    const rafs: number[] = [];
+    branchRefs.current.forEach((el, id) => {
+      const p = prev.get(id);
+      if (!p) return;
+      const n = el.getBoundingClientRect();
+      const dy = p.top - n.top;
+      if (Math.abs(dy) < 1) return;
+      el.style.transform = `translateY(${dy}px)`;
+      el.style.transition = "transform 0s";
+      rafs.push(
+        requestAnimationFrame(() => {
+          el.style.transition = "transform 280ms cubic-bezier(0.2, 0, 0, 1)";
+          el.style.transform = "";
+        }),
+      );
+    });
+    // clear so subsequent phase-2 re-renders don't re-FLIP off stale rects
+    prevRects.current = new Map();
+    return () => {
+      for (const id of rafs) cancelAnimationFrame(id);
+    };
+  }, [lockPhase]);
+
   const useAsDraft = (label: string) => {
     setOwnAnswer(label);
     // single-mode: auto-pick the own-answer radio so the draft wins the
@@ -491,33 +588,57 @@ function DecisionCard({
     }
   };
 
-  // ARIA-listbox key handler (ADR-0004). ↑/↓ moves focus, Space toggles,
-  // Enter (single-mode) picks+submits, Cmd/Ctrl+Enter (multi-mode) submits.
-  // Digit 1-9 is a type-ahead jump to the matching hint-chip index.
+  // Helper: focus own-answer textarea (used by Tab/Enter on own-answer row).
+  const focusOwnAnswerTextarea = () => {
+    const el = ownAnswerRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  };
+
+  // ARIA-listbox key handler (ADR-0004). ↑/↓ cycles focus across live
+  // branches AND the own-answer row, Space toggles, Enter (single-mode)
+  // picks+submits, Cmd/Ctrl+Enter (multi-mode) submits, Tab on own-answer
+  // jumps into the textarea. Digit 1-9 is a type-ahead jump to a branch.
   const onListKeyDown = (e: React.KeyboardEvent<HTMLUListElement>) => {
-    if (locked || live.length === 0) return;
+    if (locked) return;
     // Own-answer textarea lives inside the listbox; ignore bubbled keys from
     // form fields so typing (space, digits, arrows) isn't hijacked.
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "TEXTAREA" || tag === "INPUT") return;
-    const idx = focusedBranchId
-      ? live.findIndex((b) => b.id === focusedBranchId)
-      : -1;
+    // Nav cycle: live branches then own-answer at the end.
+    const navIds = [...live.map((b) => b.id), OWN_ANSWER_ID];
+    const idx = focusedBranchId ? navIds.indexOf(focusedBranchId) : -1;
+    const focusByIdx = (i: number) => {
+      const next = navIds[(i + navIds.length) % navIds.length];
+      setFocusedBranchId(next);
+      document.getElementById(`branch-${node.id}-${next}`)?.focus();
+    };
     if (e.key === "ArrowDown" || e.key === "ArrowRight") {
       e.preventDefault();
-      const next = live[(idx + 1 + live.length) % live.length];
-      setFocusedBranchId(next.id);
-      document.getElementById(`branch-${node.id}-${next.id}`)?.focus();
+      focusByIdx(idx + 1);
       return;
     }
     if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
       e.preventDefault();
-      const prev = live[(idx - 1 + live.length) % live.length];
-      setFocusedBranchId(prev.id);
-      document.getElementById(`branch-${node.id}-${prev.id}`)?.focus();
+      focusByIdx(idx - 1);
+      return;
+    }
+    // Tab on own-answer row → jump into textarea. Shift+Tab uses default
+    // (steps back out of the listbox).
+    if (e.key === "Tab" && !e.shiftKey && focusedBranchId === OWN_ANSWER_ID) {
+      e.preventDefault();
+      focusOwnAnswerTextarea();
       return;
     }
     if (e.key === " " && focusedBranchId) {
+      // Multi-mode own-answer is independent text (no checkbox) — space
+      // shouldn't toggle anything; focus textarea so user can type instead.
+      if (focusedBranchId === OWN_ANSWER_ID && multi) {
+        e.preventDefault();
+        focusOwnAnswerTextarea();
+        return;
+      }
       e.preventDefault();
       togglePick(focusedBranchId);
       return;
@@ -526,6 +647,15 @@ function DecisionCard({
       if ((e.metaKey || e.ctrlKey) && canSubmit) {
         e.preventDefault();
         void send("next");
+        return;
+      }
+      // Enter on own-answer row → pick its radio (single-mode) + focus
+      // textarea so user can immediately type. Submit happens on Cmd+Enter
+      // from the textarea (which has its own keydown handler).
+      if (focusedBranchId === OWN_ANSWER_ID) {
+        e.preventDefault();
+        if (!multi && !picked.has(OWN_ANSWER_ID)) setPicked(new Set([OWN_ANSWER_ID]));
+        focusOwnAnswerTextarea();
         return;
       }
       if (!multi && focusedBranchId) {
@@ -565,12 +695,44 @@ function DecisionCard({
     }
   };
 
-  // Own Answer Cmd/Ctrl+Enter submits with current toggled set + typed text.
+  // Own Answer keymap: Cmd/Ctrl+Enter submits with the typed text,
+  // Esc returns focus to the own-answer row so arrow keys are live again.
+  //
+  // Submits via postAction directly (not send()) so we don't read
+  // `ownAnswerSelected` from a stale closure: arrow→Enter→type→Cmd+Enter
+  // hits the textarea before the radio-pick re-render flushes, and send()
+  // would otherwise see ownAnswerSelected=false and drop the text. Since
+  // the user is typing IN the own-answer field, the textarea contents are
+  // the authoritative source — always include them.
   const onOwnAnswerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-      if (!canSubmit || locked || busy) return;
+      if (locked || busy) return;
+      const text = ownAnswer.trim();
+      if (!text) return;
       e.preventDefault();
-      void send("next");
+      setBusy("next");
+      postAction(sid, node.id, "next", {
+        branch_ids: multi ? realPicked : [],
+        own_answer: text,
+      })
+        .catch((err) => {
+          const rej = err as ActionRejection;
+          if (rej && typeof rej.status === "number") {
+            if (rej.err === "branch_removed") onToast("This option was removed in a recent chat.");
+            else if (rej.err === "node locked") onToast("This question is already settled.");
+            else onToast(`Action rejected: ${rej.err ?? rej.status}`);
+          } else {
+            onToast("Network error");
+          }
+        })
+        .finally(() => setBusy(null));
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      setFocusedBranchId(OWN_ANSWER_ID);
+      document.getElementById(`branch-${node.id}-${OWN_ANSWER_ID}`)?.focus();
     }
   };
 
@@ -584,7 +746,9 @@ function DecisionCard({
 
   return (
     <>
-      <article className={`gc-bigcard${locked ? " locked" : ""}`}>
+      <article
+        className={`gc-bigcard${lockPhase >= 1 ? " lock-phase-1" : ""}${lockPhase >= 2 ? " lock-phase-2" : ""}`}
+      >
         <header className="gc-bigcard-head">
           {node.multi_select && <span className="gc-chip">multi-select</span>}
           <span className="gc-dim">depth {node.depth}</span>
@@ -599,23 +763,45 @@ function DecisionCard({
           aria-label="Branches"
           onKeyDown={onListKeyDown}
         >
-          {live.map((b, i) => {
+          {displayBranches.map((row) => {
+            if (row.kind === "divider") {
+              return (
+                <li
+                  key="__divider__"
+                  className="gc-branches-divider"
+                  role="presentation"
+                  aria-hidden="true"
+                >
+                  not chosen
+                </li>
+              );
+            }
+            const b = row.b;
+            // 1-based index of this branch within live[] — used for the
+            // digit-shortcut hint chip + listbox keyboard nav target.
+            const i = live.findIndex((x) => x.id === b.id);
             const checked = picked.has(b.id);
             const isFocused = focusedBranchId === b.id;
             const rowId = `branch-${node.id}-${b.id}`;
+            const roleCls =
+              row.role === "chosen" ? " chosen-locked" : row.role === "rejected" ? " rejected-locked" : "";
             return (
               <li
                 key={b.id}
                 id={rowId}
+                ref={(el) => {
+                  if (el) branchRefs.current.set(b.id, el);
+                  else branchRefs.current.delete(b.id);
+                }}
                 role="option"
                 aria-selected={checked}
-                tabIndex={isFocused ? 0 : -1}
-                className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}${isFocused ? " focused" : ""}`}
+                tabIndex={isFocused && !locked ? 0 : -1}
+                className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}${isFocused ? " focused" : ""}${roleCls}`}
                 draggable={!locked}
                 onFocus={() => setFocusedBranchId(b.id)}
                 onClick={() => {
                   // Sync focus on click so subsequent key events feel coherent.
-                  setFocusedBranchId(b.id);
+                  if (!locked) setFocusedBranchId(b.id);
                 }}
                 onDragStart={(e) => {
                   if (locked) return;
@@ -638,6 +824,7 @@ function DecisionCard({
                   />
                   <span className="gc-branch-text">
                     <span className="gc-branch-label">
+                      <span className="gc-branch-check" aria-hidden="true">✓</span>
                       {b.is_recommended && <span className="gc-star" title="recommended">★</span>} {b.label}
                     </span>
                     {b.rationale && <span className="gc-branch-rationale">{b.rationale}</span>}
@@ -669,9 +856,19 @@ function DecisionCard({
               click handler and (in some browsers) skip placing the caret.
               Each control owns its own label via htmlFor. */}
           <li
-            role="none"
-            className={`gc-branch gc-branch-own${ownAnswerSelected ? " checked" : ""}`}
+            id={`branch-${node.id}-${OWN_ANSWER_ID}`}
+            role="option"
+            aria-selected={ownAnswerSelected}
+            tabIndex={focusedBranchId === OWN_ANSWER_ID && !locked ? 0 : -1}
+            onFocus={() => {
+              if (!locked) setFocusedBranchId(OWN_ANSWER_ID);
+            }}
+            onClick={() => {
+              if (!locked) setFocusedBranchId(OWN_ANSWER_ID);
+            }}
+            className={`gc-branch gc-branch-own${ownAnswerSelected ? " checked" : ""}${focusedBranchId === OWN_ANSWER_ID ? " focused" : ""}`}
           >
+            <span className="gc-branch-hintkey" aria-hidden="true">↵</span>
             {!multi && (
               <input
                 id={`own-radio-${node.id}`}
@@ -679,6 +876,7 @@ function DecisionCard({
                 name={`branch-${node.id}`}
                 checked={ownAnswerSelected}
                 disabled={locked}
+                tabIndex={-1}
                 onChange={() => togglePick(OWN_ANSWER_ID)}
               />
             )}
@@ -687,14 +885,14 @@ function DecisionCard({
                 htmlFor={multi ? `own-answer-${node.id}` : `own-radio-${node.id}`}
                 className="gc-branch-label"
               >
-                Your own answer {multi && <span className="gc-dim">(optional, in addition to picks)</span>}
+                Type your own answer {multi && <span className="gc-dim">(optional, in addition to picks)</span>}
               </label>
               <textarea
                 id={`own-answer-${node.id}`}
                 ref={ownAnswerRef}
                 className="gc-own-answer-textarea"
                 rows={2}
-                placeholder="type your answer, or drag a branch's “use as draft” into here… (Cmd/Ctrl+Enter submits)"
+                placeholder="type your answer, or drag a branch's “use as draft” into here… (Cmd/Ctrl+Enter submits, Esc returns to list)"
                 value={ownAnswer}
                 onChange={(e) => handleOwnAnswerChange(e.target.value)}
                 onKeyDown={onOwnAnswerKeyDown}
@@ -715,10 +913,8 @@ function DecisionCard({
           </button>
         </div>
 
-        {!!node.committed && (
-          <div className="gc-bigcard-locked-banner gc-dim">
-            <span>settled — waiting for the next question…</span>
-          </div>
+        {lockPhase >= 1 && (
+          <div className="gc-bigcard-waiting">waiting for the next question…</div>
         )}
       </article>
       <ComposerPanel
@@ -1104,7 +1300,6 @@ function ComposerPanel({
     <section className={`gc-composer${locked ? " gc-composer-locked" : ""}`}>
       <header className="gc-composer-head">
         <span className="gc-composer-title">chat</span>
-        {locked && <span className="gc-dim">settled — chat closed</span>}
         {!locked && (messages.length > 0 || proposals.length > 0) && (
           <button
             type="button"
@@ -1390,7 +1585,7 @@ function SummaryCard({
 
   return (
     <>
-    <article className={`gc-bigcard gc-summary${locked ? " locked" : ""}`}>
+    <article className={`gc-bigcard gc-summary${locked ? " gc-summary-locked" : ""}`}>
       <header className="gc-bigcard-head">
         <span className="gc-chip gc-chip-summary">summary</span>
         {docsBlocked && <span className="gc-chip gc-chip-docs">docs required</span>}
@@ -1406,58 +1601,59 @@ function SummaryCard({
       <div className="gc-summary-body">
         <ReactMarkdown>{node.summary_body ?? ""}</ReactMarkdown>
       </div>
-      {docsBlocked && node.docs_reason && (
+      {docsBlocked && node.docs_reason && !locked && (
         <p className="gc-summary-docs-reason gc-dim">{node.docs_reason}</p>
       )}
-      <div className="gc-summary-continue">
-        <textarea
-          rows={2}
-          placeholder="optional — direction for continued grilling"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          disabled={locked}
-        />
-      </div>
-      <div className="gc-summary-verdicts">
-        <button
-          type="button"
-          className="gc-btn gc-btn-primary"
-          disabled={locked || !!busy}
-          onClick={() => send("create_plan")}
-        >
-          Create plan
-        </button>
-        {!docsBlocked && (
+      {!locked && (
+        <div className="gc-summary-continue">
+          <textarea
+            rows={2}
+            placeholder="optional — direction for continued grilling"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+          />
+        </div>
+      )}
+      {!locked && (
+        <div className="gc-summary-verdicts">
+          <button
+            type="button"
+            className="gc-btn gc-btn-primary"
+            disabled={!!busy}
+            onClick={() => send("create_plan")}
+          >
+            Create plan
+          </button>
+          {!docsBlocked && (
+            <button
+              type="button"
+              className="gc-btn"
+              disabled={!!busy}
+              onClick={() => send("implement_now")}
+            >
+              Implement now
+            </button>
+          )}
           <button
             type="button"
             className="gc-btn"
-            disabled={locked || !!busy}
-            onClick={() => send("implement_now")}
+            disabled={!!busy}
+            onClick={() => send("stop_here")}
           >
-            Implement now
+            Stop here
           </button>
-        )}
-        <button
-          type="button"
-          className="gc-btn"
-          disabled={locked || !!busy}
-          onClick={() => send("stop_here")}
-        >
-          Stop here
-        </button>
-        <button
-          type="button"
-          className="gc-btn gc-btn-secondary"
-          disabled={locked || !!busy}
-          onClick={() => send("continue_grill")}
-        >
-          Continue grilling
-        </button>
-      </div>
-      {locked && (
-        <div className="gc-bigcard-locked-banner gc-dim">
-          <span>settled.</span>
+          <button
+            type="button"
+            className="gc-btn gc-btn-secondary"
+            disabled={!!busy}
+            onClick={() => send("continue_grill")}
+          >
+            Continue grilling
+          </button>
         </div>
+      )}
+      {locked && (
+        <div className="gc-bigcard-waiting">session ended</div>
       )}
     </article>
     {showMap && (

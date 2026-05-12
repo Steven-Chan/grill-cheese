@@ -327,8 +327,98 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   border-radius: 10px;
   padding: 24px;
 }
-.gc-bigcard.locked { opacity: 0.7; }
 .gc-bigcard.paused { border-color: rgba(232, 142, 93, 0.5); }
+
+/* Phase 1 — chrome (draft btns, hintkey, own-answer row, actions row)
+   fades out over ~180ms. pointer-events off so the user can't pry into
+   stale handles mid-transition. */
+.gc-bigcard.lock-phase-1 .gc-bigcard-actions,
+.gc-bigcard.lock-phase-1 .gc-branch-use-as-draft,
+.gc-bigcard.lock-phase-1 .gc-branch-hintkey,
+.gc-bigcard.lock-phase-1 .gc-branch-own {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease-out;
+}
+/* Radios/checkboxes collapse on lock — `opacity: 0` left a ghost column
+   that pushed the row text to the right of where the radio used to sit. */
+.gc-bigcard.lock-phase-1 .gc-branch > label > input,
+.gc-bigcard.lock-phase-2 .gc-branch > label > input {
+  display: none;
+}
+
+/* Phase 2 — chosen branch keeps the card surface, gets an accent border +
+   subtle tint + accent check. The previous full-accent fill looked like a
+   loud blue pill against the rest of the locked card. */
+.gc-bigcard.lock-phase-2 .gc-branch.chosen-locked {
+  background: rgba(132, 212, 179, 0.10);
+  border-color: var(--gc-accent);
+  transition: background 280ms ease-out, border-color 280ms ease-out;
+}
+.gc-bigcard.lock-phase-2 .gc-branch.chosen-locked .gc-branch-check {
+  display: inline-block;
+  color: var(--gc-accent);
+}
+.gc-bigcard.lock-phase-2 .gc-branch.rejected-locked {
+  opacity: 0.45;
+  transition: opacity 280ms ease-out;
+}
+.gc-branches-divider {
+  list-style: none;
+  border: none;
+  border-top: 1px dashed var(--gc-edge);
+  margin: 4px 0 0 0;
+  padding-top: 4px;
+  font-size: 11px;
+  color: var(--gc-fg-dim);
+  text-align: center;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0;
+}
+.gc-bigcard.lock-phase-2 .gc-branches-divider {
+  opacity: 1;
+  transition: opacity 280ms ease-out 120ms;
+}
+.gc-branch-check {
+  display: none;
+  margin-right: 4px;
+  font-weight: 600;
+}
+
+/* Waiting line — replaces old locked-banner. Pulse only during phase 2
+   so the user feels "something is coming" while CC is thinking. */
+.gc-bigcard-waiting {
+  margin-top: 16px;
+  font-size: 12px;
+  color: var(--gc-fg-dim);
+  text-align: center;
+  opacity: 0;
+}
+.gc-bigcard.lock-phase-2 .gc-bigcard-waiting {
+  animation: gc-pulse 1.6s ease-in-out infinite;
+}
+.gc-summary-locked .gc-bigcard-waiting {
+  opacity: 0.8;
+  animation: none;
+}
+@keyframes gc-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 0.9; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gc-bigcard.lock-phase-1 .gc-bigcard-actions,
+  .gc-bigcard.lock-phase-1 .gc-branch-use-as-draft,
+  .gc-bigcard.lock-phase-1 .gc-branch-hintkey,
+  .gc-bigcard.lock-phase-1 .gc-branch-own,
+  .gc-bigcard.lock-phase-2 .gc-branch.chosen-locked,
+  .gc-bigcard.lock-phase-2 .gc-branch.rejected-locked,
+  .gc-bigcard.lock-phase-2 .gc-branches-divider {
+    transition: none;
+  }
+  .gc-bigcard.lock-phase-2 .gc-bigcard-waiting { animation: none; opacity: 0.8; }
+}
 .gc-bigcard-idle { text-align: center; padding: 48px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .gc-fire {
   image-rendering: -moz-crisp-edges;
@@ -357,6 +447,11 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   transition: border-color 0.12s ease, background 0.12s ease;
 }
 .gc-branch:hover { border-color: var(--gc-accent); }
+/* No hover highlight once locked — rows are read-only. */
+.gc-bigcard.lock-phase-1 .gc-branch:hover,
+.gc-bigcard.lock-phase-2 .gc-branch:not(.chosen-locked):hover {
+  border-color: var(--gc-edge);
+}
 .gc-branch.checked { border-color: var(--gc-accent); background: rgba(132, 212, 179, 0.06); }
 .gc-branch.recommended { border-left: 3px solid var(--gc-rec); }
 .gc-branch label { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
@@ -513,8 +608,12 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-composer-input .gc-composer-editor p { margin: 0; }
 .gc-composer-send { align-self: flex-end; }
 
-/* Settled — chat is read-only after the parent decision commits. */
-.gc-composer-locked { opacity: 0.55; }
+/* Settled — composer fully fades with the rest of the chrome during phase 1. */
+.gc-composer-locked {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease-out;
+}
 .gc-composer-locked .gc-composer-editor { cursor: not-allowed; background: transparent; }
 
 /* branch chip inserted into the composer (drag-drop or click-add). */
@@ -764,14 +863,8 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 }
 .gc-chat-input textarea:focus { outline: none; border-color: var(--gc-accent); }
 .gc-chat-input button { align-self: flex-end; }
-.gc-bigcard-locked-banner {
-  margin-top: 16px;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
+/* Summary-card locked: verdict row, continue textarea, docs-reason are
+   all unmounted in JSX; only the body + "session ended" footer remain. */
 
 /* ---------- summary card ---------- */
 
@@ -1267,6 +1360,26 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-branch.focused {
   border-color: var(--gc-accent);
   box-shadow: 0 0 0 2px rgba(132, 212, 179, 0.25);
+}
+/* Once the card locks, suppress the focus ring on whatever row keyboard
+   nav last left focused — otherwise an un-chosen branch keeps its accent
+   border + glow alongside the real chosen-locked styling. */
+.gc-bigcard.lock-phase-1 .gc-branch[role="option"]:focus,
+.gc-bigcard.lock-phase-1 .gc-branch[role="option"]:focus-visible,
+.gc-bigcard.lock-phase-1 .gc-branch.focused,
+.gc-bigcard.lock-phase-2 .gc-branch[role="option"]:focus,
+.gc-bigcard.lock-phase-2 .gc-branch[role="option"]:focus-visible,
+.gc-bigcard.lock-phase-2 .gc-branch.focused {
+  box-shadow: none;
+  border-color: var(--gc-edge);
+}
+/* But the chosen-locked row's own accent border must survive that reset
+   (it ships *after* the `.focused` selector by source order, so the
+   default cascade is fine — re-state for clarity / future-proofing). */
+.gc-bigcard.lock-phase-2 .gc-branch.chosen-locked.focused,
+.gc-bigcard.lock-phase-2 .gc-branch.chosen-locked:focus,
+.gc-bigcard.lock-phase-2 .gc-branch.chosen-locked:focus-visible {
+  border-color: var(--gc-accent);
 }
 
 /* @-mention popup. Portaled to document.body and positioned with viewport

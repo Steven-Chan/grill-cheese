@@ -18,12 +18,14 @@ const SECTIONS: Section[] = [
   {
     title: "Decision card",
     rows: [
-      { keys: "↑ / ↓", effect: "Move focus across branches" },
+      { keys: "↑ / ↓", effect: "Move focus across branches and Own Answer" },
       { keys: "Space", effect: "Toggle focused branch (multi-mode) / pick (single-mode)" },
-      { keys: "Enter", effect: "Pick focused branch + submit (single-mode only)" },
+      { keys: "Enter", effect: "Pick + submit (branch, single-mode) / jump to textarea (Own Answer)" },
+      { keys: "Tab", effect: "On Own Answer row → focus the textarea" },
+      { keys: "Esc (in textarea)", effect: "Return focus to Own Answer row" },
+      { keys: "Cmd/Ctrl + K", effect: "Focus composer (chat) from anywhere" },
       { keys: "Cmd/Ctrl + Enter", effect: "Submit toggled set (multi-mode) or with typed Own Answer" },
       { keys: "1 — 9", effect: "Jump focus to that branch by hint-chip index" },
-      { keys: "Tab", effect: "Branches → Own Answer → composer" },
     ],
   },
   {
