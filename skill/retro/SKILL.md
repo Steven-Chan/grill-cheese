@@ -38,30 +38,57 @@ Save trimmed outputs as `repo_root` and `project`. If `repo_root` is empty (user
 
 If the user passed `/retro <slug>` with an explicit project arg, prefer that over the basename.
 
-### 2. Start the retro session
+### 2. Fetch the retro input payload
 
-Call the dedicated MCP tool — **NOT** `start_session`:
+Call the MCP tool — server-side data collection, no session created:
 
 ```
-start_retro_session(project=<project>, repo_root=<repo_root>)
+get_retro_input(project=<project>, repo_root=<repo_root>)
 ```
 
-Returns `{session_id, started_at, is_empty, session_count, disagreed_count, since}`. The server has already composed a markdown brief from:
+Returns `{project, since, is_empty, session_count, disagreed: [...], doc_state: {<path>: <body>, ...}}`. The server has assembled:
 
 - All ended sessions for this project whose `ended_at > marker_ts` (the retro marker `~/.grill-cheese/project-<slug>/.last-retro`).
 - Only `kind != "retro"` sessions (retros self-exclude).
-- For each disagreed node (`recommendation_score < 1`): question, branches, recommended labels, user's picks, `own_answer` text, chat transcripts, redirect / chat-removed flags.
-- Current doc state: repo `CLAUDE.md` / `CONTEXT.md` / `CONTEXT-MAP.md` / `docs/adr/*.md` / `skill/*/SKILL.md`, plus `~/.claude/CLAUDE.md` and installed `~/.claude/skills/*/SKILL.md`.
+- For each disagreed node (`recommendation_score < 1`): `question`, `reasoning`, `branches` (with `is_recommended` flag), `recommended_branch_labels`, `chosen_branch_labels`, `own_answer` text, `chat_messages`, `redirected` flag, `removed_branch_labels`, `recommendation_score`.
+- Current doc state map: repo `CLAUDE.md` / `CONTEXT.md` / `CONTEXT-MAP.md` / `docs/adr/*.md` / `skill/*/SKILL.md`, plus `~/.claude/CLAUDE.md` and installed `~/.claude/skills/*/SKILL.md` — keys are display paths, values are full bodies. Optional: you can also `Read` files yourself if you want fresher state.
 
-The brief lives in the GUI brief banner. You also have access to it via `get_session_snapshot(session_id)`.
+**Hold this payload in working memory.** You will use it for both brief composition (step 3) and pattern grouping (step 4). No need to round-trip through `get_session_snapshot` for the same data later.
 
-### 3. Handle the empty case
+### 3. Compose a slim brief and start the session
 
-If `is_empty == true`: no qualifying disagreements in the window. Call `end_session(session_id)` immediately and tell the user "Nothing to retro — `<project>` has no new disagreements since `<since>`." Stop.
+You — the agent — compose the user-facing brief. Aim for **≤30 lines**. Do NOT inline doc bodies (you have them in working memory; `Read` on demand if needed). One line per disagreement is plenty:
 
-### 4. Read the brief and identify patterns
+```
+# Retro — <project>
 
-Call `get_session_snapshot(session_id)` once to read the structured disagreed nodes. Group them into **disagreement patterns** ad hoc: cluster by topic / surface / kind of override (the user explicitly dropped fixed categorization — narrate themes from the raw text). Multi-pattern grouping is your judgment call. A pattern can span one node or many.
+**Window:** since <since> · **<N>** disagreed nodes across **<M>** sessions.
+
+## Disagreements
+- `<question>` — agent picked '<recommended>' / user picked '<chosen>' (or typed Own Answer: '<own_answer>')
+- ...
+```
+
+Then start the session via the regular MCP tool — pass `kind="retro"`:
+
+```
+start_session(
+  title=f"Retro {YYYY-MM-DD}",
+  brief=<your composed brief>,
+  project=<project>,
+  kind="retro",
+)
+```
+
+Save `session_id` from the result. The `kind="retro"` flag is what makes this session self-exclude from future retros' windows + advance the marker on terminal verdicts.
+
+### 3a. Handle the empty case
+
+If `payload.is_empty == true`: no qualifying disagreements in the window. **Do NOT call `start_session`.** Tell the user "Nothing to retro — `<project>` has no new disagreements since `<since>`." Stop.
+
+### 4. Identify patterns from the payload you already have
+
+Read the `disagreed` list (held in working memory from step 2). Group nodes into **disagreement patterns** ad hoc: cluster by topic / surface / kind of override (the user explicitly dropped fixed categorization — narrate themes from the raw text). Multi-pattern grouping is your judgment call. A pattern can span one node or many.
 
 For each pattern, ask: what concrete action would have made the agent suggest better next time?
 
@@ -114,8 +141,9 @@ Server writes the retro marker automatically on every terminal verdict (`stop_he
 
 ## Hard rules
 
-- **Always start via `start_retro_session`**, never `start_session`. The dedicated tool sets `kind="retro"` and composes the brief; calling plain `start_session` skips both and breaks the dedup loop.
-- **Always pass `repo_root`** (absolute path from `git rev-parse --show-toplevel`). The server uses it to read in-repo doc state.
+- **Always start via `get_retro_input` then `start_session(kind="retro")`.** Two MCP calls, in that order. `get_retro_input` is data-only — it does NOT create a session. You compose your own slim brief from the payload, then call regular `start_session` passing `kind="retro"`. Skipping `kind="retro"` breaks marker advancement and retro self-exclusion.
+- **Always pass `repo_root`** to `get_retro_input` (absolute path from `git rev-parse --show-toplevel`). The server uses it to read in-repo doc state.
+- **Compose a slim brief — ≤30 lines.** No inline doc bodies. One line per disagreement. The payload from step 2 is your reference; the brief is what renders in the GUI banner and stays in `Session.brief`.
 - **Don't propose actions outside the four sanctioned surfaces.** ADR-0005 scopes the surface; out-of-bounds actions should be skipped or surfaced as ambiguities in the summary, not as proposal nodes.
 - **End your turn after every `present_branches` and `present_summary`.** Channels deliver the user's action. Same discipline as grill-cheese.
 - **On `implement_now`: apply edits inline.** No new handler infrastructure exists — you ARE the handler. Read files, apply changes, validate.
@@ -126,9 +154,9 @@ Server writes the retro marker automatically on every terminal verdict (`stop_he
 
 | | grill-cheese | retro |
 |---|---|---|
-| Session start | `start_session(title, brief, project)` | `start_retro_session(project, repo_root)` |
+| Session start | `start_session(title, brief, project)` | `get_retro_input(project, repo_root)` then `start_session(title, brief, project, kind="retro")` |
 | Session `kind` | None | `"retro"` |
-| Brief source | User-provided plan / question | Server-composed from disagreement data |
+| Brief source | User-provided plan / question | Agent-composed from `get_retro_input` payload |
 | Node content | Live decisions on user's plan | Proposed actions on patterns from prior sessions |
 | Doc-state read | Skill ingests CONTEXT.md / ADRs silently | Server bundles into brief; you have it from `get_session_snapshot` |
 | Marker | None | `~/.grill-cheese/project-<slug>/.last-retro` updated on terminal verdicts |
