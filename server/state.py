@@ -144,12 +144,17 @@ class Store:
 
     # ---- sessions ----
     def new_session(
-        self, title: str, brief: str, project: str, owner_id: Optional[str] = None
+        self,
+        title: str,
+        brief: str,
+        project: str,
+        owner_id: Optional[str] = None,
+        kind: Optional[str] = None,
     ) -> Session:
         sid = uuid.uuid4().hex[:12]
         s = Session(
             id=sid, title=title, brief=brief, project=project,
-            started_at=time.time(), owner_id=owner_id,
+            started_at=time.time(), owner_id=owner_id, kind=kind,
         )
         self.sessions[sid] = s
         self._persist(s)

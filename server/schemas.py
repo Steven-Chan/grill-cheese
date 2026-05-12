@@ -135,6 +135,11 @@ class Node(BaseModel):
 # status="paused" rehydrate via extra="ignore" and fall back to "active".
 SessionStatus = Literal["active", "ended"]
 
+# kind="retro" sessions are nested grill-cheese sessions whose brief is
+# composed from disagreement data of prior ended sessions for the same
+# project. Self-exclude from future retros' windows. See ADR-0005.
+SessionKind = Literal["retro"]
+
 
 class CmuxInfo(BaseModel):
     """Terminal-multiplexer coords captured at session start so the GUI can
@@ -174,6 +179,9 @@ class Session(BaseModel):
     schema_version: int = 1
     started_at: float
     status: SessionStatus = "active"
+    # None = regular grill; "retro" = retrospective session (ADR-0005).
+    # Retros self-exclude from future retros' input windows.
+    kind: Optional[SessionKind] = None
     # set when the toolbar Wrap-up endpoint fires. Sentinel
     # `__wrap_pending__` until present_summary lands; then the real summary
     # node id. Drives the apply_action gate that locks the pre-wrap pending

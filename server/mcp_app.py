@@ -31,7 +31,12 @@ mcp = FastMCP("grill-cheese", json_response=True, streamable_http_path="/")
 
 
 @mcp.tool()
-async def start_session(title: str, brief: str, project: str) -> dict:
+async def start_session(
+    title: str,
+    brief: str,
+    project: str,
+    kind: Optional[str] = None,
+) -> dict:
     """Start a new grill session. Call once at the very start.
 
     Args:
@@ -43,6 +48,10 @@ async def start_session(title: str, brief: str, project: str) -> dict:
         project: Repo / directory slug for on-disk session path partitioning.
                  Skill should pass `git rev-parse --show-toplevel | xargs basename`
                  (or cwd basename as fallback). Required.
+        kind: Optional session kind. None = regular grill; "retro" = a
+              retrospective session (see ADR-0005). Retros self-exclude
+              from future retros' input windows. Normal grill skill should
+              leave this unset.
     Returns:
         {session_id, started_at}
     """
@@ -54,7 +63,9 @@ async def start_session(title: str, brief: str, project: str) -> dict:
     title = title.strip()
     if len(title) > TITLE_MAX:
         return {"error": f"title must be ≤{TITLE_MAX} chars (got {len(title)})"}
-    s = store.new_session(title, brief, project)
+    if kind is not None and kind != "retro":
+        return {"error": f"kind must be None or 'retro' (got {kind!r})"}
+    s = store.new_session(title, brief, project, kind=kind)
     await store.broadcast(
         s.id,
         {
@@ -64,6 +75,7 @@ async def start_session(title: str, brief: str, project: str) -> dict:
                 "title": title,
                 "brief": brief,
                 "started_at": s.started_at,
+                "kind": kind,
             },
         },
     )

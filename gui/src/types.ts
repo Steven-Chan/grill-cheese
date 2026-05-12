@@ -123,6 +123,8 @@ export interface CmuxInfo {
   bin_path?: string | null;
 }
 
+export type SessionKind = "retro";
+
 export interface SessionMeta {
   id: string;
   title: string | null;
@@ -131,6 +133,9 @@ export interface SessionMeta {
   started_at: number;
   status: SessionStatus;
   has_pending: boolean;
+  // null/undefined for regular grills; "retro" for retrospective sessions
+  // (ADR-0005). Retros self-exclude from future retros' windows.
+  kind?: SessionKind | null;
   // Per-session pick rate enriched from performance.jsonl (ADR-0003).
   // score/decision_count/verdict are null when no perf entry exists for
   // this session (pre-feature, still active, or never ended). When the
