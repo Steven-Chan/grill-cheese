@@ -542,17 +542,23 @@ async def retro_endpoint(request: Request) -> Response:
             "fallback": "Run `/retro` in any Claude Code terminal",
         }, status_code=503)
 
-    # cmux invocation — spawn a new panel running `claude` with the retro
-    # slash command prefilled. Exact cmux subcommand surface is captured here
-    # so the one-place rule from ADR-0006 holds.
-    # NOTE: the positional prompt arg after `--` is BEST-GUESS. If the
-    # installed cmux build accepts a different shape (e.g. `--prompt=`,
-    # `--initial-input`), or ignores the positional arg entirely, the user
-    # gets a blank CC panel with no error from the server (rc=0). Verify by
-    # running `cmux new-panel --help` on first integration. The fallback path
-    # is `/retro` typed directly in any CC terminal.
-    prompt = f"/retro {project}"
-    args = ["new-panel", "--cmd", "claude", "--", prompt]
+    # cmux invocation — spawn a new workspace running `claude` with the retro
+    # slash command prefilled. Verified against cmux --help; new-workspace
+    # accepts --command which is the initial shell command for the workspace's
+    # default terminal surface. The one-place rule from ADR-0006 holds.
+    # Fallback if cmux's CLI surface drifts: `/retro` typed in any CC terminal.
+    # NOTE: claude CLI may not accept slash commands as positional args today.
+    # If it doesn't, the panel opens at Claude's prompt and the user types
+    # `/retro` manually — same as the bare-fallback case, just one keystroke.
+    workspace_name = f"retro: {project}"
+    initial_cmd = f"claude '/retro {project}'"
+    args = [
+        "new-workspace",
+        "--name", workspace_name,
+        "--cwd", repo_root,
+        "--command", initial_cmd,
+        "--focus", "true",
+    ]
     rc, err = await _run_cmux(bin_path, args, None)
     if rc != 0:
         logger.warning("retro: cmux new-panel rc=%s err=%s", rc, err[:200])
