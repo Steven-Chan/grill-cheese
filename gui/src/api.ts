@@ -152,10 +152,36 @@ export async function postJumpToCmux(session_id: string): Promise<void> {
 }
 
 
-// Retrospective trigger — POST /api/retro {project}. Server peeks the
-// disagreement window; returns {empty:true} (no cmux launch) when nothing
-// to retro, else shell-execs cmux to spawn a new CC panel with /retro.
-// See ADR-0006.
+// Retrospective preview — GET /api/retro/preview?project=<slug>. Modal-
+// shaped readiness data; no doc bodies, question list capped at 50.
+// Always 200 (empty windows render an all-clear modal state). See
+// ADR-0005 Revisions (2026-05-12).
+export interface RetroPreviewQuestion {
+  node_id: string;
+  session_id: string;
+  session_title: string | null;
+  question: string;
+}
+
+export interface RetroPreview {
+  project: string;
+  since: string | null;
+  is_empty: boolean;
+  counts: { disagreed: number; sessions: number };
+  disagreed_questions: RetroPreviewQuestion[];
+  truncated: boolean;
+}
+
+export async function fetchRetroPreview(project: string): Promise<RetroPreview> {
+  const r = await fetch(`/api/retro/preview?project=${encodeURIComponent(project)}`);
+  if (!r.ok) throw new Error(`retro preview failed: ${r.status}`);
+  return r.json();
+}
+
+// Retrospective launch — POST /api/retro {project}. Called from the
+// preview modal's Launch button. Server peeks the disagreement window;
+// returns {empty:true} (no cmux launch) when nothing to retro, else
+// shell-execs cmux to spawn a new CC panel with /retro. See ADR-0006.
 export interface RetroResult {
   ok: boolean;
   empty: boolean;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { fetchPerformance, postRetro } from "../api";
-import type { RetroResult } from "../api";
+import { fetchPerformance, fetchRetroPreview, postRetro } from "../api";
+import type { RetroPreview, RetroResult } from "../api";
 import { ScoreChip } from "../components/ScoreChip";
 import type { PerformanceEntry } from "../types";
 
@@ -78,31 +78,8 @@ interface RetroToast {
 }
 
 function RetroBar({ projects }: { projects: string[] }) {
-  const [busy, setBusy] = useState<string | null>(null);
+  const [openProject, setOpenProject] = useState<string | null>(null);
   const [toast, setToast] = useState<RetroToast | null>(null);
-
-  async function run(project: string) {
-    setBusy(project);
-    setToast(null);
-    try {
-      const r: RetroResult = await postRetro(project);
-      if (r.empty) {
-        setToast({ kind: "empty", msg: `${project}: nothing to retro since last marker.` });
-      } else if (r.ok) {
-        setToast({
-          kind: "ok",
-          msg: `${project}: launched retro on ${r.disagreed_count ?? 0} disagreed nodes across ${r.session_count ?? 0} sessions.`,
-        });
-      } else {
-        const fallback = r.fallback ? ` ${r.fallback}` : "";
-        setToast({ kind: "err", msg: `${project}: ${r.err || "retro failed"}.${fallback}` });
-      }
-    } catch (e) {
-      setToast({ kind: "err", msg: `${project}: ${String(e)}` });
-    } finally {
-      setBusy(null);
-    }
-  }
 
   return (
     <div className="gc-perf-retro-bar">
@@ -112,17 +89,148 @@ function RetroBar({ projects }: { projects: string[] }) {
           key={p}
           type="button"
           className="gc-perf-retro-btn"
-          onClick={() => run(p)}
-          disabled={busy !== null}
-          aria-busy={busy === p}
+          onClick={() => {
+            setToast(null);
+            setOpenProject(p);
+          }}
         >
-          {busy === p ? "launching…" : p}
+          {p}
         </button>
       ))}
       {toast && (
         <span className={`gc-perf-retro-toast gc-perf-retro-toast-${toast.kind}`} role="status">
           {toast.msg}
         </span>
+      )}
+      {openProject !== null && (
+        <RetroPreviewModal
+          project={openProject}
+          onClose={() => setOpenProject(null)}
+          onResult={(t) => {
+            setToast(t);
+            setOpenProject(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+interface RetroPreviewModalProps {
+  project: string;
+  onClose: () => void;
+  onResult: (toast: RetroToast) => void;
+}
+
+function RetroPreviewModal({ project, onClose, onResult }: RetroPreviewModalProps) {
+  const [preview, setPreview] = useState<RetroPreview | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [launching, setLaunching] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchRetroPreview(project)
+      .then((p) => { if (!cancelled) setPreview(p); })
+      .catch((e) => { if (!cancelled) setErr(String(e)); });
+    return () => { cancelled = true; };
+  }, [project]);
+
+  // Esc-to-close on modal mount. Removed on unmount.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  async function launch() {
+    if (!preview || preview.is_empty) return;
+    setLaunching(true);
+    try {
+      const r: RetroResult = await postRetro(project);
+      if (r.empty) {
+        onResult({ kind: "empty", msg: `${project}: nothing to retro since last marker.` });
+      } else if (r.ok) {
+        onResult({
+          kind: "ok",
+          msg: `${project}: launched retro on ${r.disagreed_count ?? 0} disagreed nodes across ${r.session_count ?? 0} sessions.`,
+        });
+      } else {
+        const fallback = r.fallback ? ` ${r.fallback}` : "";
+        onResult({ kind: "err", msg: `${project}: ${r.err || "retro failed"}.${fallback}` });
+      }
+    } catch (e) {
+      onResult({ kind: "err", msg: `${project}: ${String(e)}` });
+    } finally {
+      setLaunching(false);
+    }
+  }
+
+  return (
+    <div className="gc-retro-modal-overlay" role="dialog" aria-modal="true" aria-label={`Retrospective preview for ${project}`}>
+      <div className="gc-retro-modal-card">
+        <header className="gc-retro-modal-header">
+          <h2>retrospective preview — <code>{project}</code></h2>
+          <button type="button" className="gc-retro-modal-close" onClick={onClose} aria-label="Close">×</button>
+        </header>
+        <div className="gc-retro-modal-body">
+          {err && <p className="gc-retro-modal-err">failed to load: {err}</p>}
+          {!err && preview === null && <p className="gc-dim">loading preview…</p>}
+          {preview !== null && <RetroPreviewBody preview={preview} />}
+        </div>
+        <footer className="gc-retro-modal-footer">
+          <button type="button" className="gc-retro-modal-btn" onClick={onClose} disabled={launching}>
+            cancel
+          </button>
+          <button
+            type="button"
+            className="gc-retro-modal-btn gc-retro-modal-btn-primary"
+            onClick={launch}
+            disabled={launching || preview === null || preview.is_empty}
+            aria-busy={launching}
+          >
+            {launching ? "launching…" : "launch retro"}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function RetroPreviewBody({ preview }: { preview: RetroPreview }) {
+  if (preview.is_empty) {
+    const since = preview.since ? new Date(preview.since).toLocaleString() : "the project start";
+    return (
+      <div>
+        <p>all clear — no new disagreements since <code>{since}</code>.</p>
+        <p className="gc-dim">a retro now would be a no-op; come back after more grill sessions end.</p>
+      </div>
+    );
+  }
+  const since = preview.since ? new Date(preview.since).toLocaleString() : "the project start";
+  return (
+    <div>
+      <ul className="gc-retro-modal-stats">
+        <li><strong>{preview.counts.disagreed}</strong> disagreed nodes</li>
+        <li><strong>{preview.counts.sessions}</strong> sessions</li>
+        <li>since <code>{since}</code></li>
+      </ul>
+      <h3 className="gc-retro-modal-subhead">disagreed questions</h3>
+      <ul className="gc-retro-modal-question-list">
+        {preview.disagreed_questions.map((q) => (
+          <li key={`${q.session_id}-${q.node_id}`}>
+            <Link to={`/sessions/${q.session_id}`} className="gc-retro-modal-q-link">
+              <span className="gc-retro-modal-q-text">{q.question}</span>
+              {q.session_title && (
+                <span className="gc-retro-modal-q-session">{q.session_title}</span>
+              )}
+            </Link>
+          </li>
+        ))}
+      </ul>
+      {preview.truncated && (
+        <p className="gc-dim">…list truncated; agent will see all of them.</p>
       )}
     </div>
   );
