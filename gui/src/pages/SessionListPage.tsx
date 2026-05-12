@@ -1,25 +1,22 @@
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { deleteSession, listSessions } from "../api";
+import { deleteSession } from "../api";
+import { useAppContext } from "../AppContext";
 import { FireAnimation } from "../components/FireAnimation";
 import { ListSection } from "../components/ListSection";
 import { NeedsYouBar } from "../components/NeedsYouBar";
 import { SessionRow, displayTitle } from "../components/SessionRow";
-import { openSse } from "../sse";
-import { initialListState, listReducer } from "../state";
-import type { SessionMeta, SseEvent } from "../types";
+import type { SessionMeta } from "../types";
 
 const ENDED_PREVIEW_COUNT = 5;
 
 export function SessionListPage() {
   const navigate = useNavigate();
-  const [state, dispatch] = useReducer(listReducer, initialListState);
+  const { list: state } = useAppContext();
   const [toast, setToast] = useState<string | null>(null);
   const [brandMode, setBrandMode] = useState<"fire" | "cheese">("fire");
   const [showAllEnded, setShowAllEnded] = useState(false);
   const [clearingEnded, setClearingEnded] = useState(false);
-  const dispatchRef = useRef(dispatch);
-  dispatchRef.current = dispatch;
 
   // brand flame cycles fire (7.5s) <-> cheese (3.5s) for charm
   useEffect(() => {
@@ -29,25 +26,6 @@ export function SessionListPage() {
     }, delay);
     return () => window.clearTimeout(id);
   }, [brandMode]);
-
-  // initial fetch
-  useEffect(() => {
-    listSessions()
-      .then((r) => dispatchRef.current({ type: "set_sessions", sessions: r.sessions }))
-      .catch(() => {});
-  }, []);
-
-  // global SSE — server re-broadcasts session_list on add/end/delete
-  useEffect(() => {
-    return openSse(null, (ev: SseEvent) => {
-      const d = dispatchRef.current;
-      if (ev.type === "session_list") {
-        d({ type: "set_sessions", sessions: ev.payload.sessions });
-      } else if (ev.type === "session_deleted") {
-        d({ type: "session_deleted", id: ev.session_id });
-      }
-    });
-  }, []);
 
   const { needsYou, active, ended } = useMemo(() => {
     const needsYou: SessionMeta[] = [];
