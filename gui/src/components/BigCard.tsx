@@ -113,6 +113,22 @@ function ChipView(props: NodeViewProps) {
   return (
     <NodeViewWrapper as="span" className="gc-branch-chip" contentEditable={false} draggable={false}>
       <span className="gc-branch-chip-label">{attrs.label || "branch"}</span>
+      <button
+        type="button"
+        className="gc-chip-x"
+        title="Remove"
+        aria-label="Remove chip"
+        // mousedown so we beat ProseMirror's selection handling — by the time
+        // click fires, focus may have shifted off the editor and the node
+        // selection that deleteNode() needs is gone.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          props.deleteNode();
+        }}
+      >
+        ×
+      </button>
     </NodeViewWrapper>
   );
 }
@@ -220,7 +236,7 @@ const BranchChipNode = Node.create({
 // placeholder out for a real branch chip (handled in BranchChipNode's drop
 // plugin above). If the user sends without filling it, it just disappears.
 
-function ChipPlaceholderView() {
+function ChipPlaceholderView(props: NodeViewProps) {
   return (
     <NodeViewWrapper
       as="span"
@@ -228,7 +244,20 @@ function ChipPlaceholderView() {
       contentEditable={false}
       draggable={false}
     >
-      drop branch
+      <span className="gc-chip-placeholder-label">drop branch</span>
+      <button
+        type="button"
+        className="gc-chip-x"
+        title="Remove slot"
+        aria-label="Remove slot"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          props.deleteNode();
+        }}
+      >
+        ×
+      </button>
     </NodeViewWrapper>
   );
 }
@@ -774,7 +803,7 @@ function ComposerPanel({
           className="gc-btn gc-btn-shortcut"
           onClick={() =>
             applyShortcutWithSlots(
-              ["Compare ", { slot: true }, " and ", { slot: true }, "."],
+              ["Compare ", { slot: true }, " and ", { slot: true }],
               "compare",
             )
           }
@@ -788,7 +817,7 @@ function ComposerPanel({
           className="gc-btn gc-btn-shortcut"
           onClick={() =>
             applyShortcutWithSlots(
-              ["Can we combine ", { slot: true }, " and ", { slot: true }, "?"],
+              ["Can we combine ", { slot: true }, " and ", { slot: true }],
               "combine",
             )
           }

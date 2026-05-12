@@ -456,6 +456,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 
 /* branch chip inserted into the composer (drag-drop or click-add). */
 .gc-branch-chip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   padding: 1px 8px;
@@ -471,10 +472,47 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 }
 .gc-branch-chip-label { font-weight: 500; }
 
+/* shared dismiss (×) button — top-right of any chip. Sits outside the chip's
+   border via translate so it doesn't shift the inline baseline. Hidden by
+   default; revealed on hover or focus-within so it doesn't visually clutter
+   a chip-dense message. */
+.gc-chip-x {
+  position: absolute;
+  top: 0;
+  right: 0;
+  transform: translate(45%, -45%);
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--gc-edge);
+  border-radius: 50%;
+  background: var(--gc-bg-elev);
+  color: var(--gc-fg-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 100ms, color 100ms, border-color 100ms;
+}
+.gc-branch-chip:hover .gc-chip-x,
+.gc-chip-placeholder:hover .gc-chip-x,
+.gc-branch-chip:focus-within .gc-chip-x,
+.gc-chip-placeholder:focus-within .gc-chip-x {
+  opacity: 1;
+}
+.gc-chip-x:hover {
+  color: var(--gc-warn);
+  border-color: var(--gc-warn);
+}
+
 /* empty placeholder slot — emitted by Compare/Combine shortcuts. Drag a
    branch onto it and the drop handler swaps the placeholder out for a real
    chip. Serializes to "" in the sent message if left unfilled. */
 .gc-chip-placeholder {
+  position: relative;
   display: inline-flex;
   align-items: center;
   padding: 1px 10px;
