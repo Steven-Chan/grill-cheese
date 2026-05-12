@@ -227,22 +227,24 @@ def read_current_doc_state(repo_root: pathlib.Path) -> dict[str, str]:
     return out
 
 
-# ---- brief composition ----
+# ---- payload assembly (agent-shaped vs modal-shaped) ----
+# Brief composition retired in favour of agent-composed briefs (ADR-0005
+# Revisions, 2026-05-12). Two assembly helpers replace `compose_brief`:
+#   - assemble_full_payload — agent's MCP tool input (includes doc bodies).
+#   - assemble_preview_payload — /performance modal data (no doc bodies).
 
-def compose_brief(
+PREVIEW_QUESTION_CAP = 50
+
+
+def assemble_full_payload(
     project: str, repo_root: pathlib.Path
-) -> tuple[RetroBrief, str]:
-    """Compose the retro session brief. Returns (RetroBrief, markdown_brief).
-
-    The markdown_brief is what gets passed to start_session as the literal
-    `brief` field — rendered in the GUI brief banner + read by the retro
-    agent. The structured RetroBrief is what the MCP tool returns for the
-    skill to introspect (e.g. is_empty short-circuit).
-    """
+) -> RetroBrief:
+    """Full agent-shaped payload. Equivalent to the pre-revision RetroBrief
+    minus the markdown rendering step."""
     since = read_marker(project)
     disagreed, session_count = collect_disagreement_data(project, since)
     doc_state = read_current_doc_state(repo_root)
-    brief = RetroBrief(
+    return RetroBrief(
         project=project,
         since=since.isoformat() if since else None,
         is_empty=(session_count == 0 or len(disagreed) == 0),
@@ -250,57 +252,32 @@ def compose_brief(
         disagreed=disagreed,
         doc_state=doc_state,
     )
-    md = _render_brief_markdown(brief)
-    return brief, md
 
 
-def _render_brief_markdown(b: RetroBrief) -> str:
-    lines: list[str] = []
-    lines.append(f"# Retrospective brief — project `{b.project}`")
-    lines.append("")
-    if b.since:
-        lines.append(f"**Window:** sessions ended after `{b.since}`")
-    else:
-        lines.append("**Window:** all ended sessions (no prior retro marker)")
-    lines.append(f"**Sessions scanned:** {b.session_count}")
-    lines.append(f"**Disagreed decision nodes:** {len(b.disagreed)}")
-    lines.append("")
-    if b.is_empty:
-        lines.append("_No disagreements in this window. Retro is a no-op._")
-        return "\n".join(lines)
-    lines.append("## Disagreed nodes")
-    lines.append("")
-    for d in b.disagreed:
-        lines.append(f"### `{d.node_id}` — {d.question}")
-        if d.reasoning:
-            lines.append(f"> {d.reasoning}")
-        lines.append("")
-        if d.recommended_branch_labels:
-            lines.append(f"- Agent recommended: {', '.join(d.recommended_branch_labels)}")
-        if d.chosen_branch_labels:
-            lines.append(f"- User picked: {', '.join(d.chosen_branch_labels)}")
-        if d.own_answer:
-            lines.append(f"- User typed (Own Answer): {d.own_answer!r}")
-        if d.removed_branch_labels:
-            lines.append(f"- Removed via chat: {', '.join(d.removed_branch_labels)}")
-        if d.redirected:
-            lines.append("- Redirected via chat")
-        if d.chat_messages:
-            lines.append("- Chat transcript:")
-            for m in d.chat_messages:
-                role = m.get("role", "?")
-                text = (m.get("text") or "").strip().replace("\n", " ")
-                lines.append(f"  - **{role}:** {text[:400]}")
-        lines.append("")
-    lines.append("## Current doc state (truncated bodies)")
-    lines.append("")
-    for path, body in b.doc_state.items():
-        head = body.strip().splitlines()[:8]
-        lines.append(f"- `{path}` ({len(body)} chars)")
-        for line in head:
-            lines.append(f"  > {line}")
-    lines.append("")
-    return "\n".join(lines)
+def assemble_preview_payload(project: str) -> dict:
+    """Modal-shaped payload. Skips doc bodies; caps the question list."""
+    since = read_marker(project)
+    disagreed, session_count = collect_disagreement_data(project, since)
+    questions = [
+        {
+            "node_id": d.node_id,
+            "session_id": d.session_id,
+            "session_title": d.session_title,
+            "question": d.question,
+        }
+        for d in disagreed[:PREVIEW_QUESTION_CAP]
+    ]
+    return {
+        "project": project,
+        "since": since.isoformat() if since else None,
+        "is_empty": (session_count == 0 or len(disagreed) == 0),
+        "counts": {
+            "disagreed": len(disagreed),
+            "sessions": session_count,
+        },
+        "disagreed_questions": questions,
+        "truncated": len(disagreed) > PREVIEW_QUESTION_CAP,
+    }
 
 
 # ---- cmux bin resolution ----

@@ -494,6 +494,22 @@ async def jump_to_cmux_endpoint(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
+async def retro_preview_endpoint(request: Request) -> Response:
+    """GET /api/retro/preview?project=<slug> — modal-shaped readiness data.
+
+    Returns counts + disagreed-node questions verbatim, no doc bodies.
+    Always 200 (even for empty windows; the modal renders the all-clear
+    state and the user clicks Cancel). See ADR-0005 Revisions.
+    """
+    from . import retro as retro_mod
+
+    project = (request.query_params.get("project") or "").strip()
+    if not project:
+        return JSONResponse({"err": "project required"}, status_code=400)
+    payload = retro_mod.assemble_preview_payload(project)
+    return JSONResponse(payload)
+
+
 async def retro_endpoint(request: Request) -> Response:
     """POST /api/retro {project, repo_root} — GUI Retro button trigger.
 

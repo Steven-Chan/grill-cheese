@@ -497,20 +497,25 @@ async def get_session_snapshot(session_id: str) -> dict:
 
 
 @mcp.tool()
-async def start_retro_session(project: str, repo_root: str) -> dict:
-    """Start a kind="retro" grill session for a project (ADR-0005).
+async def get_retro_input(project: str, repo_root: str) -> dict:
+    """Return the structured input payload the retro skill reads to compose
+    its own brief (ADR-0005 Revisions, 2026-05-12).
 
     Scans ended sessions for `project` since the retro marker timestamp at
     `~/.grill-cheese/project-<slug>/.last-retro`, collects disagreed
     decision nodes (recommendation_score < 1) plus their chat transcripts
     and own_answer text, and reads current doc state (CLAUDE.md / ADRs /
-    CONTEXT.md / skill files / global ~/.claude/CLAUDE.md). All of that
-    is composed into a markdown brief for the retro grill.
+    CONTEXT.md / skill files / global ~/.claude/CLAUDE.md).
+
+    Returns the raw payload — no session started, no markdown rendered.
+    The skill takes this, composes a slim user-facing brief, then calls
+    regular `start_session(title, brief, project, kind="retro")`.
 
     Returns:
-        {session_id, started_at, is_empty, session_count, disagreed_count}.
-        When is_empty=true the skill should call end_session immediately
-        and tell the user no retro is needed.
+        {project, since, is_empty, session_count, disagreed: [...],
+         doc_state: {<path>: <body>, ...}}.
+        When is_empty=true the skill should tell the user there's nothing
+        to retro and NOT call start_session.
 
     Args:
         project: project slug (same as start_session.project).
@@ -530,30 +535,5 @@ async def start_retro_session(project: str, repo_root: str) -> dict:
     if not root.exists() or not root.is_dir():
         return {"error": f"repo_root does not exist or is not a directory: {root}"}
 
-    brief_obj, brief_md = retro_mod.compose_brief(project, root)
-    title = f"Retro {time.strftime('%Y-%m-%d')}"
-    if len(title) > TITLE_MAX:
-        title = title[:TITLE_MAX]
-    s = store.new_session(title, brief_md, project, kind="retro")
-    await store.broadcast(
-        s.id,
-        {
-            "type": "session_started",
-            "session_id": s.id,
-            "payload": {
-                "title": title,
-                "brief": brief_md,
-                "started_at": s.started_at,
-                "kind": "retro",
-            },
-        },
-    )
-    await store.broadcast_session_list()
-    return {
-        "session_id": s.id,
-        "started_at": s.started_at,
-        "is_empty": brief_obj.is_empty,
-        "session_count": brief_obj.session_count,
-        "disagreed_count": len(brief_obj.disagreed),
-        "since": brief_obj.since,
-    }
+    payload = retro_mod.assemble_full_payload(project, root)
+    return payload.model_dump()

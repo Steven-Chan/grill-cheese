@@ -38,7 +38,7 @@ _TOOL_FUNCS = {
     "post_chat_message": mcp_app.post_chat_message,
     "end_session": mcp_app.end_session,
     "get_session_snapshot": mcp_app.get_session_snapshot,
-    "start_retro_session": mcp_app.start_retro_session,
+    "get_retro_input": mcp_app.get_retro_input,
 }
 
 

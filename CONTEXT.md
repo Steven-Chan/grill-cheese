@@ -75,12 +75,14 @@ Source of truth for terminology. Read this before edits that touch the decision-
 
 ## Retrospective workflow
 
-- **Retro session** — grill-cheese session whose brief is composed from disagreement data across prior ended sessions of the same project. `Session.kind == "retro"`. Reviews proposed actions, one (or grouped) per decision node. Excluded from future retros' input windows (a retro doesn't retro itself).
+- **Retro session** — grill-cheese session whose brief is **agent-composed** from a `get_retro_input` payload (see *Retro input payload*). `Session.kind == "retro"`. Reviews proposed actions, one (or grouped) per decision node. Excluded from future retros' input windows (a retro doesn't retro itself).
+- **Retro preview** — modal opened by the `/performance` Retro button. Renders counts (N disagreed nodes / M sessions / window since) + the disagreed-node questions verbatim. Cheap server-side; no LLM. Stats are advisory — the user decides whether the window is substantive enough to grill.
+- **Retro input payload** — structured JSON the agent reads to compose its own brief. Server-provided via `get_retro_input(project, repo_root)` MCP tool: full disagreed nodes (question, branches, chat_messages, own_answer, recommendation_score, redirected, removed_branch_ids), doc paths, doc bodies, counts. The skill reads this payload, composes a slim user-facing brief, then calls regular `start_session(kind="retro")` with its own brief.
 - **Proposal node** — decision node inside a retro session. Branches represent how to address an observed disagreement pattern. Shape is the agent's call per node: accept/reject/refine, alternative-action competition, or hybrid. No fixed schema; categorization explicitly dropped.
 - **Action surface** — what a proposal can edit. Four surfaces only: project docs (repo `CLAUDE.md` / ADRs / `CONTEXT.md`), skill files (`~/.claude/skills/*`), global `~/.claude/CLAUDE.md`, source code of this app. Anything outside is out of bounds for v1.
 - **Retro marker** — `~/.grill-cheese/project-<slug>/.last-retro` (text file, single ISO-8601 timestamp). Bounds the input window — retro reads only ended sessions whose `ended_at > marker_ts`. Updated on retro session end for terminal verdicts (`stop_here` / `create_plan` / `implement_now`).
 - **Disagreement pattern** — agent-narrated theme aggregating multiple disagreed nodes by reading raw question + branch labels + `own_answer` text + chat transcripts. No taxonomy. Multi-pattern grouping is the agent's judgment at retro time.
-- **Retro trigger** — GUI button on `/performance` posts to `POST /api/retro`; server shell-execs cmux to spawn a fresh CC panel running `/retro` (see ADR-0006). Slash command `/retro` works directly from any CC terminal as a fallback.
+- **Retro trigger** — GUI button on `/performance` first hits `GET /api/retro/preview` to fetch readiness stats + raw disagreed questions; opens a **Retro preview** modal. User decides Launch or Cancel. Launch posts to `POST /api/retro`, which shell-execs cmux to spawn a fresh CC panel running `/retro` (see ADR-0006). Slash command `/retro` works directly from any CC terminal as a fallback (bypasses the preview).
 
 ## First-run surfaces
 
