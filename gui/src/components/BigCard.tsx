@@ -22,7 +22,7 @@ import {
 import { useSession } from "../SessionContext";
 import type { Branch, ChatMessage, DecisionNode, PendingProposal } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
-import { FOCUS_COMPOSER_EVENT } from "../hooks/useShortcuts";
+import { FOCUS_BRANCHES_EVENT, FOCUS_COMPOSER_EVENT } from "../hooks/useShortcuts";
 
 // Decision map is the sole xyflow + dagre surface in the GUI (ADR-0002).
 // Lazy-loaded so the ~150KB xyflow bundle never touches the initial paint
@@ -464,6 +464,25 @@ function DecisionCard({
       prevLockedRef.current = false;
     }
   }, [locked]);
+
+  // Cmd/Ctrl+B from anywhere on the page → snap focus back to the listbox.
+  // Without this, focus can land on a button / chat shortcut / browser
+  // chrome, and arrow keys then look "broken" because they aren't reaching
+  // onListKeyDown. Recovers to focusedBranchId if still valid, else falls
+  // back to initialFocusId.
+  useEffect(() => {
+    const onJump = () => {
+      if (locked) return;
+      let target = focusedBranchIdRef.current;
+      const validBranch = !!target && live.some((b) => b.id === target);
+      if (!validBranch && target !== OWN_ANSWER_ID) target = null;
+      if (!target) target = initialFocusId;
+      setFocusedBranchId(target);
+      document.getElementById(`branch-${node.id}-${target}`)?.focus();
+    };
+    window.addEventListener(FOCUS_BRANCHES_EVENT, onJump);
+    return () => window.removeEventListener(FOCUS_BRANCHES_EVENT, onJump);
+  }, [locked, live, initialFocusId, node.id]);
 
   // Display order: in phase 2, chosen branches lift to the top, rejected
   // sink below a divider. Drives both the rendered <li> sequence and

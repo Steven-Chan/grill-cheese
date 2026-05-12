@@ -23,6 +23,7 @@ const SECTIONS: Section[] = [
       { keys: "Enter", effect: "Pick + submit (branch, single-mode) / jump to textarea (Own Answer)" },
       { keys: "Tab", effect: "On Own Answer row → focus the textarea" },
       { keys: "Esc (in textarea)", effect: "Return focus to Own Answer row" },
+      { keys: "Cmd/Ctrl + B", effect: "Snap focus to the branch list from anywhere" },
       { keys: "Cmd/Ctrl + K", effect: "Focus composer (chat) from anywhere" },
       { keys: "Cmd/Ctrl + Enter", effect: "Submit toggled set (multi-mode) or with typed Own Answer" },
       { keys: "1 — 9", effect: "Jump focus to that branch by hint-chip index" },

@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 // Window-level keyboard bindings (ADR-0004).
 //   Cmd/Ctrl+K  → focus the chat composer (dispatch grill:focus-composer)
+//   Cmd/Ctrl+B  → focus the branch listbox (dispatch grill:focus-branches)
 //   ?            → open the cheatsheet modal (when no textarea is focused)
 //
 // Element-scoped bindings (Arrow / Space / Enter on the listbox, Cmd+Enter
@@ -17,6 +18,7 @@ function isTextInput(target: EventTarget | null): boolean {
 }
 
 export const FOCUS_COMPOSER_EVENT = "grill:focus-composer";
+export const FOCUS_BRANCHES_EVENT = "grill:focus-branches";
 
 export function useShortcuts({
   onOpenCheatsheet,
@@ -30,6 +32,13 @@ export function useShortcuts({
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent(FOCUS_COMPOSER_EVENT));
+        return;
+      }
+      // Cmd/Ctrl+B — branches jump. Recovers arrow-key nav when focus has
+      // drifted to a button / link / nothing. Fires from any context.
+      if ((e.metaKey || e.ctrlKey) && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent(FOCUS_BRANCHES_EVENT));
         return;
       }
       // ? — cheatsheet. Gated to non-text-input focus so literal `?` typing
