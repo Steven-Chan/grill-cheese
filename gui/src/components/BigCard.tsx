@@ -381,9 +381,8 @@ function DecisionCard({
   // Chat is non-blocking (ADR-0001) so chat_open/messages do NOT lock the card.
   const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
-  const useAsDraft = (label: string, rationale: string) => {
-    const text = rationale ? `${label} — ${rationale}` : label;
-    setOwnAnswer(text);
+  const useAsDraft = (label: string) => {
+    setOwnAnswer(label);
     // single-mode: auto-pick the own-answer radio so the draft wins the
     // mutual-exclusion. multi-mode: textarea is independent — leave picks alone.
     if (!multi) setPicked(new Set([OWN_ANSWER_ID]));
@@ -487,7 +486,7 @@ function DecisionCard({
                   className="gc-branch-use-as-draft"
                   title="Use as draft for Own Answer"
                   disabled={locked}
-                  onClick={() => useAsDraft(b.label, b.rationale)}
+                  onClick={() => useAsDraft(b.label)}
                 >
                   use as draft
                 </button>
