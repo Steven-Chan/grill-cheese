@@ -34,8 +34,9 @@ PYTHONPATH=. uv run python -m scripts.smoke_e2e
 # install hooks into ~/.claude/settings.json + drop hook.js into ~/.claude/grill-cheese/
 ./scripts/install-hooks.sh
 
-# install skill
+# install skills
 cp -r skill/grill-cheese ~/.claude/skills/
+cp -r skill/retro ~/.claude/skills/
 
 # register MCP server (merge into ~/.claude.json) — stdio shim entry
 cat claude-mcp-config.example.json
