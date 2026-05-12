@@ -44,9 +44,20 @@ Adopt a layered model that uses native a11y primitives on the card and modifier-
 
 Subtle `gc-branch-hintkey` monospace badge in each branch row corner shows `1`, `2`, `3`, `4`. Always visible but visually quiet. Same index appears inside the `@`-popup, so muscle memory carries between surfaces.
 
+### Command palette — `Cmd+P` (amended 2026-05-12)
+
+- `Cmd/Ctrl+P` (window-scoped) opens a nav-only command palette. Fires regardless of focus context — same pattern as `Cmd/Ctrl+K` and `Cmd/Ctrl+B`.
+- `preventDefault` on the keydown swallows the browser Print dialog. Rationale: this app has no Print workflow; `GET /export/<sid>.md` is the canonical printable artifact path. Trading Print to recover `Cmd+P` for in-app navigation is judged a net win.
+- Palette is **nav-only**. Items: every session in the global session list + the 2 fixed pages (Session list, Performance). No commands surface — every toolbar/card action already has a direct binding; a commands palette would duplicate without discovery win. Grilled and rejected in session `4e56660da1bb`.
+- Ranking: needs-you sessions → MRU-recent → pages → never-visited / ended. MRU sourced from `localStorage.grillMru` (written on `SessionDetailPage` mount).
+- Fuzzy match: title-only. `project` is displayed on each row but not matched.
+- Row shape: title + project chip + status badge (`needs you` / `active` / `ended`).
+- Keyboard: `↑/↓` move focus across rows, `Enter` navigates to the focused item, `Esc` closes the palette and restores focus to the previously focused element.
+- Overlay precedence is governed by ADR-0005 (modal-exclusive).
+
 ### Cheatsheet
 
-`?` (when no textarea is focused) opens a modal listing every binding grouped by surface. Toolbar footer carries a low-contrast `Press ? for shortcuts` hint.
+`?` (when no textarea is focused) opens a modal listing every binding grouped by surface. Toolbar footer carries a low-contrast `Press ? for shortcuts` hint. The cheatsheet lists the `Cmd/Ctrl+P` palette binding under the Global section.
 
 ## Tradeoffs considered
 
@@ -65,8 +76,12 @@ Subtle `gc-branch-hintkey` monospace badge in each branch row corner shows `1`, 
 ## Consequences
 
 - `gui/src/components/BigCard.tsx` gains listbox semantics on the branch container, roving `tabIndex`, an `onKeyDown` covering `↑/↓ / Space / Enter / Cmd+Enter / digit`, a hint-chip span per branch row, and an `Esc` handler on the editor DOM.
-- New file `gui/src/hooks/useShortcuts.ts` owns the window-level `Cmd+K` and `?` bindings.
+- New file `gui/src/hooks/useShortcuts.ts` owns the window-level `Cmd+K`, `Cmd+B`, `Cmd+P` and `?` bindings.
 - New file `gui/src/components/CheatsheetModal.tsx` renders the binding cheatsheet.
+- New file `gui/src/components/CommandPalette.tsx` renders the Cmd+P palette overlay (amendment 2026-05-12).
+- New file `gui/src/mru.ts` owns the `localStorage.grillMru` read/write helpers.
+- New file `gui/src/OverlayContext.tsx` exposes the App-level `activeOverlay` slot (palette / cheatsheet / null) consumed by `CheatsheetModal`, `CommandPalette`, and `useShortcuts`. Governs overlay exclusivity per ADR-0005.
+- App-level session list lift: `gui/src/AppContext.tsx` owns the global session list + global SSE subscription so the palette is available on every page (palette would otherwise need an on-open fetch on the detail page).
 - The Tiptap editor gains a custom suggestion plugin (via `@tiptap/pm/state`'s `Plugin` API — no new npm dep) that drives the `@`-mention popup. The popup itself is a plain React component anchored to the composer.
 - `CONTEXT.md` gains `Hint chip`, `Composer-jump`, `@-mention popup` glossary entries, and a `★ initial focus` line under "Decision-card surface".
 - `SidebarHistory.tsx` Esc handler is guarded so opening the cheatsheet or `@`-popup does not close the sidebar.
