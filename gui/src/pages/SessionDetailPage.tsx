@@ -10,9 +10,14 @@ import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
 import { exportMarkdownUrl, postJumpToCmux, postWrap, type ActionRejection } from "../api";
 import { useShortcuts } from "../hooks/useShortcuts";
+import { bumpMru } from "../mru";
 
 export function SessionDetailPage() {
   const { sid } = useParams<{ sid: string }>();
+  // MRU bump on route entry — palette ranking uses this. Cheap; no SSR concerns.
+  useEffect(() => {
+    if (sid) bumpMru(sid);
+  }, [sid]);
   if (!sid) return null;
   return (
     <SessionProvider sid={sid}>
