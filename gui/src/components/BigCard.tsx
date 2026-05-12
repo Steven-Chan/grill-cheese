@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   EditorContent,
@@ -21,6 +21,12 @@ import {
 import { useSession } from "../SessionContext";
 import type { ChatMessage, DecisionNode, PendingProposal } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
+
+// Decision map is the sole xyflow + dagre surface in the GUI (ADR-0002).
+// Lazy-loaded so the ~150KB xyflow bundle never touches the initial paint
+// of the active grill surface — only fetched when the user opens the
+// retrospective overlay from the summary card.
+const DecisionMap = lazy(() => import("./DecisionMap"));
 
 // MIME used for branch-row drag payloads. Plain JSON in the body:
 // `{branch_id, label}`. Read by the Tiptap drop handler + the Own Answer
@@ -650,7 +656,7 @@ function ComposerPanel({
   }, [messages.length, batchKey]);
 
   const sendCurrent = async () => {
-    if (busy || !editor) return;
+    if (busy || !editor || locked) return;
     // .getText() walks the doc and uses renderText() on each Node — branch
     // chips serialize via BranchChipNode.renderText as `[Branch id: label]`
     // inline in the message string. No structured content on the wire.
@@ -672,6 +678,25 @@ function ComposerPanel({
       setBusy(null);
     }
   };
+
+  // Cmd+Enter / Ctrl+Enter to send. Attached on the ProseMirror DOM. Uses a
+  // ref so the listener always sees the latest sendCurrent without
+  // re-attaching every render.
+  const sendRef = useRef<() => Promise<void>>(async () => {});
+  sendRef.current = sendCurrent;
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        void sendRef.current();
+      }
+    };
+    dom.addEventListener("keydown", onKeyDown);
+    return () => dom.removeEventListener("keydown", onKeyDown);
+  }, [editor]);
 
   const accept = async () => {
     if (busy || proposals.length === 0 || !pickedProposalId) return;
@@ -952,8 +977,20 @@ function SummaryCard({
 }) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<ActionKind | null>(null);
+  const [showMap, setShowMap] = useState(false);
   const docsBlocked = !!node.generate_docs;
   const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
+
+  // Esc closes the map overlay — keep close affordance available even when
+  // pan/zoom has focus.
+  useEffect(() => {
+    if (!showMap) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowMap(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showMap]);
 
   const send = async (action: ActionKind) => {
     if (busy) return;
@@ -975,10 +1012,19 @@ function SummaryCard({
   };
 
   return (
+    <>
     <article className={`gc-bigcard gc-summary${locked ? " locked" : ""}`}>
       <header className="gc-bigcard-head">
         <span className="gc-chip gc-chip-summary">summary</span>
         {docsBlocked && <span className="gc-chip gc-chip-docs">docs required</span>}
+        <button
+          type="button"
+          className="gc-btn gc-btn-toolbar gc-summary-map-toggle"
+          onClick={() => setShowMap(true)}
+          title="Open the decision map for this session"
+        >
+          Show map
+        </button>
       </header>
       <div className="gc-summary-body">
         <ReactMarkdown>{node.summary_body ?? ""}</ReactMarkdown>
@@ -1037,5 +1083,39 @@ function SummaryCard({
         </div>
       )}
     </article>
+    {showMap && (
+      <div
+        className="gc-decision-map-overlay"
+        role="dialog"
+        aria-label="Session decision map"
+        onClick={(e) => {
+          // backdrop click closes; clicks on the inner panel don't bubble here
+          if (e.target === e.currentTarget) setShowMap(false);
+        }}
+      >
+        <div className="gc-decision-map-panel">
+          <header className="gc-decision-map-head">
+            <span className="gc-decision-map-title">Decision map</span>
+            <button
+              type="button"
+              className="gc-btn gc-btn-toolbar"
+              onClick={() => setShowMap(false)}
+              aria-label="Close map"
+              title="Close (Esc)"
+            >
+              Close
+            </button>
+          </header>
+          <div className="gc-decision-map-body">
+            <Suspense
+              fallback={<div className="gc-dim gc-decision-map-loading">Loading map…</div>}
+            >
+              <DecisionMap />
+            </Suspense>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
