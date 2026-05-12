@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
-import { CheatsheetModal } from "../components/CheatsheetModal";
 import { FireAnimation } from "../components/FireAnimation";
 import { ScoreChip } from "../components/ScoreChip";
 import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
 import { exportMarkdownUrl, postJumpToCmux, postWrap, type ActionRejection } from "../api";
-import { useShortcuts } from "../hooks/useShortcuts";
 import { bumpMru } from "../mru";
 
 export function SessionDetailPage() {
@@ -33,9 +31,6 @@ function DetailShell() {
   const [wrappingUp, setWrappingUp] = useState(false);
   // null = follow live pending. set = pinned to a specific past node in BigCard slot.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [cheatsheetOpen, setCheatsheetOpen] = useState(false);
-  const openCheatsheet = useCallback(() => setCheatsheetOpen(true), []);
-  useShortcuts({ onOpenCheatsheet: openCheatsheet });
 
   // chip (icon-only, always visible): fire iff Claude is being waited on,
   // otherwise cheese. Flipping back to fire on the next waiting edge is fine.
@@ -187,7 +182,6 @@ function DetailShell() {
       <div className="gc-detail-shortcut-hint" aria-hidden="true">
         Press <kbd>?</kbd> for shortcuts
       </div>
-      {cheatsheetOpen && <CheatsheetModal onClose={() => setCheatsheetOpen(false)} />}
     </div>
   );
 }

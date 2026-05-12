@@ -1,8 +1,9 @@
 import { useEffect, useRef } from "react";
 
 // Cheatsheet modal (ADR-0004). Opened from the `?` keystroke (non-textarea
-// focus) via useShortcuts. Esc + backdrop click close. Focus traps to the
-// Close button on open; restores prior focus on close.
+// focus) via useShortcuts. Render gated by OverlayContext.active ===
+// "cheatsheet" (ADR-0005). Esc + backdrop click call onClose, which the
+// App-level mount points at setOverlay(null).
 
 interface Binding {
   keys: string;
