@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---- branch + node ----
@@ -24,16 +24,19 @@ class Branch(BaseModel):
 
 
 NodeKind = Literal["decision", "summary"]
-ChatOutcome = Literal["refine", "redirect", "resolve"]
+# `resolve` outcome dropped — see docs/adr/0001-non-blocking-chat.md.
+# Legacy session JSONs with outcome="resolve" rehydrate via extra="ignore".
+ChatOutcome = Literal["refine", "redirect"]
 
 
 class ChatBlock(BaseModel):
     """One applied chat result on a node. Accumulates in Node.chats."""
+    model_config = {"extra": "ignore"}
+
     chat_id: str
     summary: str
     outcome: ChatOutcome
     applied_at: float
-    branch_id: Optional[str] = None  # set when chat was scoped to a branch
 
 
 class ChatOps(BaseModel):
@@ -102,19 +105,17 @@ class Node(BaseModel):
     chats: list[ChatBlock] = Field(default_factory=list)
     # set when chat outcome == "redirect" — node abandoned, child carries new question
     redirected: bool = False
-    # inline-chat: live transcript. Persisted between Open and Accept/Close
-    # so refresh/restart preserves the thread. Pruned on Accept (apply lands
-    # as ChatBlock) or Close (discard, nothing applied).
+    # inline-chat: live transcript. Persisted across reloads. Composer is
+    # always-visible (non-blocking chat — see ADR-0001); empty list means
+    # no chat thread started on this node yet. Pruned on Accept (lands as
+    # ChatBlock) or Close (discard, nothing applied).
     chat_messages: list[ChatMessage] = Field(default_factory=list)
     # inline-chat: staged proposals from Claude. Multi-slot — Claude can
     # offer N alternatives in one `post_chat_message(proposals=[...])`
     # call; the whole list is replaced atomically on a fresh stage (no
     # stacking). User picks ONE via proposal_id to commit. Empty list
-    # when chat is open with no proposals yet, or after Accept/Close.
+    # when no proposals are staged or after Accept/Close.
     pending_proposals: list[PendingProposal] = Field(default_factory=list)
-    # inline-chat: true between user clicking Chat and Accept/Close.
-    # Survives reload so the panel re-renders open.
-    chat_open: bool = False
     # persistence: action buffer fields (moved off Store dicts so one
     # session JSON dump captures full state)
     pending_actions: list["AskBranchesResult"] = Field(default_factory=list)
@@ -124,7 +125,9 @@ class Node(BaseModel):
 
 # ---- session ----
 
-SessionStatus = Literal["active", "paused", "ended"]
+# `paused` removed — non-blocking chat (ADR-0001). Legacy JSONs with
+# status="paused" rehydrate via extra="ignore" and fall back to "active".
+SessionStatus = Literal["active", "ended"]
 
 
 class CmuxInfo(BaseModel):
@@ -142,6 +145,16 @@ class CmuxInfo(BaseModel):
 class Session(BaseModel):
     model_config = {"extra": "ignore"}
 
+    @field_validator("status", mode="before")
+    @classmethod
+    def _coerce_legacy_paused(cls, v):
+        # Legacy session JSONs (pre-ADR-0001) carry status="paused". The
+        # literal no longer accepts it; without this remap the whole
+        # session would fail rehydration and get quarantined as .json.bad.
+        if v == "paused":
+            return "active"
+        return v
+
     id: str
     title: Optional[str] = None
     brief: str
@@ -155,10 +168,6 @@ class Session(BaseModel):
     schema_version: int = 1
     started_at: float
     status: SessionStatus = "active"
-    # node_id whose chat-button triggered the pause; cleared on resume
-    paused_node_id: Optional[str] = None
-    # branch the user pinned chat to (None = node-level chat)
-    paused_branch_id: Optional[str] = None
     # set when the toolbar Wrap-up endpoint fires. Sentinel
     # `__wrap_pending__` until present_summary lands; then the real summary
     # node id. Drives the apply_action gate that locks the pre-wrap pending
@@ -176,12 +185,13 @@ class Session(BaseModel):
 
 # ---- SSE outbound events (server -> GUI) ----
 # Event types: session_started, session_list, session_ended, session_deleted,
-# session_paused, session_resumed, session_wrap, node_added, node_updated,
-# node_committed, chat_message_added, chat_accepted, chat_closed, hook_event.
+# session_wrap, node_added, node_updated, node_committed, chat_message_added,
+# chat_proposals_staged, chat_accepted, chat_closed, hook_event, session_meta.
 # session_wrap fires when the toolbar Wrap-up endpoint is hit; payload is
 # empty {} (session id carries the context). chat_accepted fires after the
 # GUI Accept commits a staged chat proposal — shim bridges it to channel
 # so Claude wakes and pushes the next present_branches (no more dead-end).
+# (session_paused / session_resumed removed — see ADR-0001.)
 
 class SseEvent(BaseModel):
     type: str
@@ -193,28 +203,28 @@ class SseEvent(BaseModel):
 #
 # `next`           = user submitted picks. `branch_ids` carries the chosen
 #                    set (length 1 in radio/single-mode, ≥1 in multi-mode).
-#                    `note` carries optional typed text — server synthesizes
-#                    a user_authored Branch from it and appends to the
-#                    submission. Min=1: must have ≥1 branch_id OR non-empty
-#                    note. (action=other was killed; typed text now goes
-#                    through next + note.)
-# `chat`           = user wants to PAUSE the grill and chat about this node
-#                    in Claude Code. Bare click — no note. `branch_id` set
-#                    when chat is scoped to a specific branch (single id,
-#                    not a set: chat is per-row). Commits + server marks
-#                    session paused.
-# `stop`           = user is done; commits a stop action (toolbar wrap-up).
-# (mark_rejected / unmark dropped — chat ops own removal now)
+#                    `own_answer` carries optional typed text — server
+#                    synthesizes a user_authored Branch from it and appends
+#                    to the submission. Min=1: must have ≥1 branch_id OR
+#                    non-empty own_answer.
+# Verdict actions: stop_here / create_plan / implement_now / continue_grill
+# (summary nodes only).
+# Inline-chat actions: chat_user_msg / chat_accept / chat_close.
+# (`chat` action removed — composer is always-visible, no open-event needed.
+# See ADR-0001.)
 
 class GuiAction(BaseModel):
+    model_config = {"extra": "ignore"}
+
     session_id: str
     node_id: str
-    # plural pick set for action=next. May be empty when only `note` is set
-    # (typed text → synth branch). Server rejects next with both empty.
+    # plural pick set for action=next. May be empty when only own_answer is
+    # set (typed text → synth branch). Server rejects next with both empty.
     branch_ids: list[str] = Field(default_factory=list)
-    # single-id scope for action=chat (chat-on-row). Unused by next.
-    branch_id: Optional[str] = None
-    note: Optional[str] = None
+    # Own Answer text — first-class commit input for action=next when no
+    # Claude-proposed branch fits. Server synthesizes a user_authored Branch
+    # from it. NOT a note attached to a branch pick. See CONTEXT.md.
+    own_answer: Optional[str] = None
     # inline-chat: chat thread id, set on action ∈ {chat_user_msg,
     # chat_accept, chat_close}. Generated GUI-side on first user msg.
     chat_id: Optional[str] = None
@@ -226,7 +236,7 @@ class GuiAction(BaseModel):
     # action=chat_accept now that multiple proposals can be staged at once.
     proposal_id: Optional[str] = None
     action: Literal[
-        "next", "chat",
+        "next",
         "stop_here", "create_plan", "implement_now", "continue_grill",
         "chat_user_msg", "chat_accept", "chat_close",
     ]
@@ -249,6 +259,8 @@ class AskBranchesInput(BaseModel):
 
 
 class AskBranchesResult(BaseModel):
+    model_config = {"extra": "ignore"}
+
     node_id: str
     # plural-only chosen state. Length 1 for radio, ≥1 for multi. Includes
     # synth user_authored branches when typed text accompanied the submit.
@@ -256,18 +268,15 @@ class AskBranchesResult(BaseModel):
     # Label echo so the skill never has to map ids back to its options.
     # Same length + order as chosen_branch_ids.
     chosen_branch_labels: list[str] = Field(default_factory=list)
-    note: Optional[str] = None
+    # Own Answer text (when user typed an answer instead of / alongside picks).
+    own_answer: Optional[str] = None
     action: Literal[
-        "next", "chat",
+        "next",
         "stop_here", "create_plan", "implement_now", "continue_grill",
     ] = "next"
     # full chosen-path markdown — set only on create_plan / implement_now
     # so model can drive plan-write or coding directly off this string
     chain_markdown: Optional[str] = None
-    # chat-only scope (per-row chat). Distinct field from chosen_* to keep
-    # the discriminated-union honest: chat result is never a "pick".
-    chat_branch_id: Optional[str] = None
-    chat_branch_label: Optional[str] = None
 
 
 # ---- claude code hook payload (subset we care about) ----
@@ -282,5 +291,3 @@ class HookEvent(BaseModel):
     # link to grill node if Claude annotated it via env var GRILL_CHEESE_NODE_ID
     grill_node_id: Optional[str] = None
     grill_session_id: Optional[str] = None
-    # set true server-side when hook arrives while session is paused on this node
-    chat_tag: bool = False

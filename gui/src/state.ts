@@ -2,7 +2,6 @@ import type {
   ChatMessage,
   CmuxInfo,
   DecisionNode,
-  PausedState,
   PendingProposal,
   SessionMeta,
   SessionStatus,
@@ -17,7 +16,6 @@ export interface SessionState {
   project: string | null;
   startedAt: number;
   status: SessionStatus;
-  paused: PausedState | null;
   endedSummary: string | null;
   // node_id -> node
   nodes: Record<string, DecisionNode>;
@@ -36,8 +34,6 @@ export type SessionAction =
   | { type: "session_started"; title: string | null; brief: string; project?: string; startedAt: number }
   | { type: "session_meta"; cmux?: CmuxInfo | null }
   | { type: "session_ended"; summary: string }
-  | { type: "session_paused"; paused: PausedState }
-  | { type: "session_resumed" }
   | { type: "session_wrap" }
   | { type: "node_added"; node: DecisionNode }
   | { type: "node_updated"; node: DecisionNode }
@@ -53,8 +49,6 @@ export interface Snapshot {
   project?: string;
   started_at: number;
   status: SessionStatus;
-  paused_node_id: string | null;
-  paused_branch_id: string | null;
   // null when not wrapping; "__wrap_pending__" sentinel between wrap click
   // and the skill's first present_summary; real node id thereafter.
   wrap_summary_node_id: string | null;
@@ -73,7 +67,6 @@ export function initialSessionState(sid: string): SessionState {
     project: null,
     startedAt: 0,
     status: "active",
-    paused: null,
     endedSummary: null,
     nodes: {},
     nodeOrder: [],
@@ -115,8 +108,6 @@ function mirrorCommitted(
 
 // Pending = last decision/summary node that isn't committed, isn't redirected,
 // isn't implicit (silent record-only), and hasn't already had a pick land.
-// chosen_branch_ids.length>0 catches chat-resolve (server synthesises a chosen
-// branch and unlocks the node, so `committed` doesn't flip in our state).
 function findPending(state: Pick<SessionState, "nodes" | "nodeOrder">): string | null {
   for (let i = state.nodeOrder.length - 1; i >= 0; i--) {
     const n = state.nodes[state.nodeOrder[i]];
@@ -147,9 +138,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         project: snap.project ?? null,
         startedAt: snap.started_at,
         status: snap.status,
-        paused: snap.paused_node_id
-          ? { node_id: snap.paused_node_id, branch_id: snap.paused_branch_id }
-          : null,
         nodes,
         nodeOrder: order,
         wrapping: snap.wrap_summary_node_id != null,
@@ -171,11 +159,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
     case "session_meta":
       return { ...state, cmux: action.cmux ?? state.cmux };
     case "session_ended":
-      return { ...state, endedSummary: action.summary, status: "ended", pendingNodeId: null, paused: null, wrapping: false };
-    case "session_paused":
-      return { ...state, status: "paused", paused: action.paused };
-    case "session_resumed":
-      return { ...state, status: "active", paused: null };
+      return { ...state, endedSummary: action.summary, status: "ended", pendingNodeId: null, wrapping: false };
     case "session_wrap":
       return { ...state, wrapping: true };
     case "node_added": {
@@ -234,7 +218,6 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
       if (!n) return state;
       const updated: DecisionNode = {
         ...n,
-        chat_open: false,
         chat_messages: [],
         pending_proposals: [],
       };

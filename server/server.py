@@ -22,7 +22,11 @@ from .hooks import (
     snapshot_endpoint,
     wrap_endpoint,
 )
-from .internal_dispatch import internal_notify_endpoint, internal_tool_endpoint
+from .internal_dispatch import (
+    internal_notify_endpoint,
+    internal_shortcut_endpoint,
+    internal_tool_endpoint,
+)
 from .mcp_app import mcp
 from .sse import events_endpoint
 from .state import store
@@ -114,6 +118,7 @@ routes = [
     # /internal/tool/{name} — JSON dispatch used by the stdio shim. 127.0.0.1 only.
     Route("/internal/tool/{name}", internal_tool_endpoint, methods=["POST"]),
     Route("/internal/telemetry/notify", internal_notify_endpoint, methods=["POST"]),
+    Route("/internal/telemetry/shortcut", internal_shortcut_endpoint, methods=["POST"]),
     Mount("/mcp/", app=_mcp_router),
     *_spa_routes(),
 ]

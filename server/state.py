@@ -34,8 +34,9 @@ _WRAP_PENDING_SENTINEL = "__wrap_pending__"
 
 MAX_RING = 5000  # per-session SSE replay buffer
 DEBOUNCE_SECONDS = 0.75  # idle window before flushing buffered clicks
+# `chat` removed (ADR-0001): non-blocking chat means no chat action commits.
 TERMINAL_ACTIONS = {
-    "next", "chat",
+    "next",
     "stop_here", "create_plan", "implement_now", "continue_grill",
 }
 # subset that auto-end the session server-side after flush
@@ -54,8 +55,6 @@ class Store:
         self._timers: dict[str, Any] = {}
         # node_id -> Event signalling buffer flushed (lazy-created in get_event)
         self._events: dict[str, asyncio.Event] = {}
-        # session_id -> Event signalling status change (pause/resume)
-        self._status_events: dict[str, asyncio.Event] = {}
         # SSE subscribers: session_id -> list[asyncio.Queue]
         self._subs: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         # global subscribers (all sessions, for index page)
@@ -377,67 +376,11 @@ class Store:
             node.committed_actions = []
             node.is_flushed = False
 
-    def unlock_node(self, session_id: str, node_id: str) -> None:
-        """Unlock a flushed node so clicks can resume.
-
-        Used by apply_chat_result on refine: chat result mutates the node;
-        node must accept new clicks (pick / chat again / etc) afterwards.
-        Drops the committed batch since the next round of clicks belongs
-        to a fresh wait_for_action cycle.
-        """
-        timer = self._timers.pop(node_id, None)
-        if timer is not None:
-            timer.cancel()
-        s = self.sessions.get(session_id)
-        if s:
-            node = s.nodes.get(node_id)
-            if node:
-                node.pending_actions = []
-                node.committed_actions = []
-                node.is_flushed = False
-            self._persist(s)
-        # rotate event so old waiters who already returned do not re-fire
-        old = self._events.pop(node_id, None)
-        if old is not None and not old.is_set():
-            old.set()  # release any stragglers
-
-    def get_status_event(self, sid: str) -> asyncio.Event:
-        ev = self._status_events.get(sid)
-        if ev is None:
-            ev = asyncio.Event()
-            self._status_events[sid] = ev
-        return ev
-
-    def _bump_status_event(self, sid: str) -> None:
-        """Wake current waiters and rotate to a fresh event for future waits.
-        Avoids the set()+clear() race where a freshly-cleared event makes
-        Event.wait() return False before the resumer can re-check state."""
-        old = self._status_events.pop(sid, None)
-        if old is not None:
-            old.set()
-        # next get_status_event call lazily creates a fresh, unset event
-
-    def pause_session(
-        self, sid: str, node_id: str, branch_id: Optional[str] = None
-    ) -> tuple[Optional[Session], bool]:
-        """Mark session paused (chat handoff to CC). Returns (session, changed)
-        where changed=False if session was already paused on this exact
-        (node_id, branch_id) pair — caller can skip re-broadcasting."""
-        s = self.sessions.get(sid)
-        if not s:
-            return None, False
-        already = (
-            s.status == "paused"
-            and s.paused_node_id == node_id
-            and s.paused_branch_id == branch_id
-        )
-        s.status = "paused"
-        s.paused_node_id = node_id
-        s.paused_branch_id = branch_id
-        if not already:
-            self._bump_status_event(sid)
-        self._persist(s)
-        return s, not already
+    # unlock_node removed in ADR-0001 (non-blocking chat). The chat path
+    # no longer locks the node, so there's nothing to unlock. The historic
+    # caller (apply_chat_result on refine) used it to clear is_flushed and
+    # drop the committed batch — silent dataloss if invoked now, since a
+    # node that the user already committed on would have its answer wiped.
 
     async def wrap_session(self, sid: str) -> Optional[Session]:
         """Mark a session as awaiting verdict-card composition.
@@ -470,27 +413,13 @@ class Store:
         s.wrap_summary_node_id = node_id
         self._persist(s)
 
-    def resume_session(self, sid: str) -> Optional[Session]:
-        """Flip paused → active. Called explicitly via resume_session MCP tool
-        when user types 'resume' in CC, or implicitly when present_branches
-        pushes a new node."""
-        s = self.sessions.get(sid)
-        if not s or s.status != "paused":
-            return None
-        s.status = "active"
-        s.paused_node_id = None
-        s.paused_branch_id = None
-        self._bump_status_event(sid)
-        self._persist(s)
-        return s
-
     # ---- delete ----
     async def delete_session(self, sid: str) -> bool:
         """Move session.json + .events.jsonl to per-project trash/, drop all
         in-memory state, broadcast session_deleted + session_list. Trash is
         wiped on next server startup.
 
-        Active/paused sessions are torn down too — caller must have user
+        Active sessions are torn down too — caller must have user
         confirm beforehand (GUI does this via window.confirm()).
         """
         s = self.sessions.get(sid)
@@ -509,10 +438,6 @@ class Store:
             old_ev = self._events.pop(node_id, None)
             if old_ev is not None and not old_ev.is_set():
                 old_ev.set()
-        # rotate status event so any waiters unblock
-        old_status = self._status_events.pop(sid, None)
-        if old_status is not None and not old_status.is_set():
-            old_status.set()
 
         # move files (json + jsonl sibling pair) to trash
         sess_dir = self._session_dir(project)
@@ -575,11 +500,11 @@ class Store:
             return None  # locked
 
         # wrap gate: once wrap fires, only verdict actions on the summary node
-        # are accepted. blocks late next/chat on the pre-wrap pending node.
+        # are accepted. blocks late `next` on the pre-wrap pending node.
         if (
             s.wrap_summary_node_id is not None
             and action.node_id != s.wrap_summary_node_id
-            and action.action in ("next", "chat")
+            and action.action == "next"
         ):
             return None
 
@@ -611,7 +536,7 @@ class Store:
                 node_id=action.node_id,
                 chosen_branch_ids=[cont.id],
                 chosen_branch_labels=[cont.label],
-                note=action.note,
+                own_answer=action.own_answer,
                 action="continue_grill",
             )
 
@@ -626,20 +551,20 @@ class Store:
                     return None
                 chosen_ids.append(b.id)
                 chosen_labels.append(b.label)
-            # synth-branch path: typed text becomes a user_authored Branch on
+            # Own Answer path: typed text becomes a user_authored Branch on
             # the node and is included in the chosen set on the same submit.
-            note = (action.note or "").strip()
-            if note:
+            own = (action.own_answer or "").strip()
+            if own:
                 synth = Branch(
-                    label=note[:60],
-                    rationale=note,
+                    label=own[:60],
+                    rationale=own,
                     is_recommended=False,
                     user_authored=True,
                 )
                 node.branches.append(synth)
                 chosen_ids.append(synth.id)
                 chosen_labels.append(synth.label)
-            # min=1: must have at least one branch_id OR non-empty note
+            # min=1: must have at least one branch_id OR non-empty own_answer
             if not chosen_ids:
                 return None
             node.chosen_branch_ids = chosen_ids
@@ -647,33 +572,10 @@ class Store:
                 node_id=action.node_id,
                 chosen_branch_ids=chosen_ids,
                 chosen_branch_labels=chosen_labels,
-                note=action.note,
+                own_answer=action.own_answer,
                 action="next",
             )
 
-        if action.action == "chat":
-            scoped = None
-            if action.branch_id:
-                if action.branch_id in node.removed_branch_ids:
-                    return None  # cannot chat about a removed branch
-                scoped = next(
-                    (b for b in node.branches if b.id == action.branch_id), None
-                )
-                if scoped is None:
-                    return None
-            # inline-chat: flag node as having an open thread. Fresh open
-            # wipes any leftover messages / pending proposals from a prior
-            # chat session on the same node (after Close + re-open, or
-            # rehydration of a stale state).
-            node.chat_open = True
-            node.chat_messages = []
-            node.pending_proposals = []
-            return AskBranchesResult(
-                node_id=action.node_id,
-                chat_branch_id=scoped.id if scoped else None,
-                chat_branch_label=scoped.label if scoped else None,
-                action="chat",
-            )
         return None
 
     # ---- inline-chat: transcript + proposal + accept/close ----
@@ -703,8 +605,6 @@ class Store:
         node = s.nodes.get(node_id)
         if not node:
             return None, None, "no such node"
-        if not node.chat_open:
-            return None, None, "chat not open"
         # idempotent: same msg_id already appended -> return cached, no seq
         for existing in node.chat_messages:
             if existing.msg_id == msg_id:
@@ -730,9 +630,9 @@ class Store:
         Callers (currently only post_chat_message) MUST validate via
         validate_proposals() first — that's the atomic gate that decides
         whether the chat message gets appended. This method re-checks
-        only the lightweight state invariants (session/node/chat_open)
-        and trusts proposal shape from the caller. Existing list is
-        REPLACED atomically on success (no stacking).
+        only the lightweight state invariants (session/node) and trusts
+        proposal shape from the caller. Existing list is REPLACED
+        atomically on success (no stacking).
         """
         if not proposals:
             return None, "proposals required (non-empty list)"
@@ -742,8 +642,6 @@ class Store:
         node = s.nodes.get(node_id)
         if not node:
             return None, "no such node"
-        if not node.chat_open:
-            return None, "chat not open"
         now = time.time()
         staged: list[PendingProposal] = []
         for p in proposals:
@@ -785,7 +683,8 @@ class Store:
             outcome = p.get("outcome")
             summary = p.get("summary")
             ops_raw = p.get("ops")
-            if outcome not in ("refine", "redirect", "resolve"):
+            # `resolve` removed in ADR-0001.
+            if outcome not in ("refine", "redirect"):
                 return f"proposals[{idx}]: bad outcome: {outcome}"
             if not summary:
                 return f"proposals[{idx}]: summary required"
@@ -805,9 +704,9 @@ class Store:
         self, sid: str, node_id: str, proposal_id: Optional[str] = None
     ) -> tuple[Optional[Node], Optional[str], Optional[str]]:
         """Commit ONE staged proposal (picked by proposal_id): applies via
-        apply_chat_result, then clears live transcript / pending_proposals /
-        chat_open. When proposal_id is None and exactly one is staged, the
-        sole proposal is picked. Returns (node, redirect_branch_id, err).
+        apply_chat_result, then clears live transcript / pending_proposals.
+        When proposal_id is None and exactly one is staged, the sole
+        proposal is picked. Returns (node, redirect_branch_id, err).
         """
         s = self.sessions.get(sid)
         if not s:
@@ -826,17 +725,10 @@ class Store:
             prop = next((p for p in props if p.proposal_id == proposal_id), None)
             if prop is None:
                 return None, None, f"unknown proposal_id: {proposal_id}"
-        # Clear chat-track fields BEFORE the apply runs so its internal
-        # _persist captures the final clean state in one write. A crash
-        # between two persists previously left an orphaned open-chat panel
-        # on a resumed session.
-        node.chat_messages = []
-        node.pending_proposals = []
-        node.chat_open = False
-        # reuse the canonical apply path — same mutations as the
-        # apply_chat_result MCP tool. It also unlocks (refine/resolve)
-        # and flips session active. Its _persist now writes the
-        # fully-clean state in one shot.
+        # Apply first; clear chat-track fields only on success.
+        # Clear-before-confirm would lose the live thread + staged proposal
+        # if apply_chat_result rejects (e.g. unknown branch id in removes
+        # discovered after staging due to a concurrent refine).
         node_after, redirect_bid, err = self.apply_chat_result(
             sid=sid,
             node_id=node_id,
@@ -847,14 +739,18 @@ class Store:
         )
         if err is not None or node_after is None:
             return None, None, err or "apply failed"
+        node.chat_messages = []
+        node.pending_proposals = []
+        self._persist(s)
         return node_after, redirect_bid, None
 
     def close_chat(
         self, sid: str, node_id: str
     ) -> tuple[Optional[Node], Optional[str]]:
-        """Discard chat: drop transcript + proposal, unlock node, resume
-        session. No ChatBlock written. Single _persist at end so a crash
-        cannot leave unlock_node's intermediate state on disk.
+        """Discard the chat thread: drop transcript + any staged proposals.
+        No ChatBlock written. Non-blocking chat (ADR-0001) — there is no
+        node lock or session pause to release; this is purely a "clear
+        thread" operation.
         """
         s = self.sessions.get(sid)
         if not s:
@@ -862,30 +758,8 @@ class Store:
         node = s.nodes.get(node_id)
         if not node:
             return None, "no such node"
-        # chat fields
         node.chat_messages = []
         node.pending_proposals = []
-        node.chat_open = False
-        # node-unlock logic (inlined from unlock_node — we want a SINGLE
-        # _persist at the bottom that captures both the unlock + session
-        # resume atomically). unlock_node persists internally, which would
-        # otherwise leave a window where node is unlocked but session is
-        # still paused.
-        timer = self._timers.pop(node_id, None)
-        if timer is not None:
-            timer.cancel()
-        node.pending_actions = []
-        node.committed_actions = []
-        node.is_flushed = False
-        old_ev = self._events.pop(node_id, None)
-        if old_ev is not None and not old_ev.is_set():
-            old_ev.set()
-        # session resume if paused
-        if s.status == "paused":
-            s.status = "active"
-            s.paused_node_id = None
-            s.paused_branch_id = None
-            self._bump_status_event(sid)
         self._persist(s)
         return node, None
 
@@ -918,11 +792,11 @@ class Store:
                       appended to node.branches.
           - redirect: node.redirected = True. Synthesize a 'redirect' branch
                       with first 60 chars of summary as label. Return its id.
-          - resolve:  synthesize a chosen branch (label = first 60 chars of
-                      summary) and set chosen_branch_ids = [synth_id].
 
-        On success: appends ChatBlock, unlocks node for refine/resolve,
-        resumes session (status -> active).
+        `resolve` outcome removed in ADR-0001 — non-blocking chat means the
+        user can commit normally via `next`; chat-as-commit is dead.
+
+        On success: appends ChatBlock. Non-blocking — no lock/pause to release.
         """
         s = self.sessions.get(sid)
         if not s:
@@ -930,7 +804,7 @@ class Store:
         node = s.nodes.get(node_id)
         if not node:
             return None, None, "no such node"
-        if outcome not in ("refine", "redirect", "resolve"):
+        if outcome not in ("refine", "redirect"):
             return None, None, f"bad outcome: {outcome}"
 
         # idempotency: if chat_id already applied, return cached node unchanged.
@@ -991,17 +865,6 @@ class Store:
             # do NOT set chosen_branch_ids — chosen means "user picked"; redirect
             # means "abandoned via chat". Tree wiring uses the synthesized
             # branch's child_node_id once a follow-up node hangs off it.
-        elif outcome == "resolve":
-            label = chat_summary.strip().splitlines()[0] if chat_summary else "resolved via chat"
-            label = label[:60] or "resolved via chat"
-            resolved = Branch(
-                id=uuid.uuid4().hex[:8],
-                label=label,
-                rationale="resolved via chat",
-                is_recommended=True,
-            )
-            node.branches.append(resolved)
-            node.chosen_branch_ids = [resolved.id]
 
         # log the chat
         node.chats.append(
@@ -1010,21 +873,8 @@ class Store:
                 summary=chat_summary,
                 outcome=outcome,  # type: ignore[arg-type]
                 applied_at=time.time(),
-                branch_id=s.paused_branch_id,
             )
         )
-
-        # unlock node (refine/resolve) so user can interact again. redirect
-        # leaves the node read-only — user moves on to the new question.
-        if outcome in ("refine", "resolve"):
-            self.unlock_node(sid, node_id)
-
-        # flip session back to active
-        if s.status == "paused":
-            s.status = "active"
-            s.paused_node_id = None
-            s.paused_branch_id = None
-            self._bump_status_event(sid)
 
         self._persist(s)
         return node, redirect_branch_id, None
@@ -1113,13 +963,6 @@ class Store:
         if not sid or sid not in self.sessions:
             return
         s = self.sessions[sid]
-        # tag chat-time tool calls so GUI can render them distinctly
-        if (
-            s.status == "paused"
-            and ev.grill_node_id
-            and ev.grill_node_id == s.paused_node_id
-        ):
-            ev.chat_tag = True
         node_id = ev.grill_node_id or "_unbound"
         s.hook_traces.setdefault(node_id, []).append(ev.model_dump())
         self._persist(s)
@@ -1127,8 +970,8 @@ class Store:
     # ---- session-list helpers ----
     def _has_pending(self, sid: str) -> bool:
         """True when session has at least one non-implicit node not yet flushed.
-        Paused / ended sessions never count — spec says * fires only on
-        active sessions awaiting a click."""
+        Ended sessions never count — badge fires only on active sessions
+        awaiting a click."""
         s = self.sessions.get(sid)
         if not s or s.status != "active":
             return False

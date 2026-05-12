@@ -1,23 +1,27 @@
-"""In-process smoke for the buffered grill loop + chat-as-decision.
+"""In-process smoke for the buffered grill loop + non-blocking chat outcomes.
 
-Tests (channels-mode: wait_for_action removed; flush still drives the same
-event surface that the shim later bridges to notifications/claude/channel):
+Non-blocking chat (ADR-0001): the `chat` action and session pause/lock are
+gone; chat starts implicitly when the first chat_user_msg lands. `resolve`
+outcome dropped — only `refine` and `redirect` remain.
+
+Tests:
   1. present_branches returns immediately with node_id
   2. unflushed node has no committed actions (parking on the per-node Event)
   3. terminal click flushes immediately → committed batch present
   4. flushed batch is idempotent on re-read
   5. flushed node is locked — further enqueue_action rejected
-  6. apply_chat_result(refine): merges adds, soft-deletes removes, unlocks
+  6. apply_chat_result(refine): merges adds, soft-deletes removes
   7. apply_chat_result idempotency: replay with same chat_id is no-op
   8. apply_chat_result rejects unknown branch ids in removes
   9. apply_chat_result(redirect): node.redirected = True
- 10. apply_chat_result(resolve): synthesizes chosen branch
+ 10. apply_chat_result rejects `resolve` outcome (dropped in ADR-0001)
  11. picking a chat-removed branch fails apply_action (would be 409 over HTTP)
+ 12. multi-mode submit synthesizes a user_authored branch from own_answer
 """
 import asyncio
 import uuid
 
-from server.state import store, DEBOUNCE_SECONDS
+from server.state import store
 from server.schemas import Branch, ChatOps, GuiAction
 
 
@@ -26,22 +30,20 @@ def push_click(
     node_id: str,
     action: str,
     branch_ids: list[str] | None = None,
-    branch_id: str | None = None,
-    note: str | None = None,
+    own_answer: str | None = None,
 ):
     a = GuiAction(
         session_id=sid,
         node_id=node_id,
         action=action,
         branch_ids=branch_ids or [],
-        branch_id=branch_id,
-        note=note,
+        own_answer=own_answer,
     )
     rec = store.apply_action(a)
     assert rec is not None, f"apply_action returned None for {action}"
     ok = store.enqueue_action(sid, node_id, rec)
     assert ok, "enqueue rejected"
-    if action in ("next", "stop", "chat"):
+    if action == "next":
         store.flush_now(sid, node_id)
 
 
@@ -111,7 +113,7 @@ async def main():
     assert rec is None, "apply_action should reject locked node"
     print("OK — flushed node locked")
 
-    # ---- chat-as-decision ----
+    # ---- non-blocking chat outcomes (refine / redirect; no resolve) ----
 
     node2 = store.add_node(
         sid=sid,
@@ -127,11 +129,9 @@ async def main():
     )
     nid2 = node2.id
 
-    # simulate user clicking chat
-    push_click(sid, nid2, "chat")
-    store.pause_session(sid, nid2, None)
-    assert store.is_flushed(nid2), "chat must flush + lock node"
-    assert node2.chosen_branch_ids == [], "chat must not set chosen"
+    # non-blocking: no chat action, no pause. Chat doesn't flush/lock the node.
+    assert not store.is_flushed(nid2), "fresh node must not be flushed"
+    assert node2.chosen_branch_ids == [], "fresh node must have no chosen"
 
     # 6. refine: add 1, remove c1
     chat_id = uuid.uuid4().hex
@@ -153,7 +153,7 @@ async def main():
     assert any(b.id == "c3" for b in n_after.branches), "c3 should be added"
     assert len(n_after.chats) == 1, "chats should accumulate"
     assert n_after.chats[0].outcome == "refine"
-    assert not store.is_flushed(nid2), "refine should unlock node"
+    assert not store.is_flushed(nid2), "non-blocking chat — node stays unlocked"
     print(f"OK — refine: removed={n_after.removed_branch_ids} branches={[b.id for b in n_after.branches]}")
 
     # 7. idempotency: replay same chat_id is no-op
@@ -204,8 +204,6 @@ async def main():
         parent_branch_id=None,
         depth=1,
     )
-    push_click(sid, node3.id, "chat")
-    store.pause_session(sid, node3.id, None)
     n_r, redir_bid, err_r = store.apply_chat_result(
         sid=sid,
         node_id=node3.id,
@@ -220,33 +218,30 @@ async def main():
     assert any(b.id == redir_bid for b in n_r.branches), "redirect branch must exist on node"
     print(f"OK — redirect marks node.redirected; synthesized branch={redir_bid}")
 
-    # ---- resolve ----
+    # ---- resolve dropped (ADR-0001) ----
     node4 = store.add_node(
         sid=sid,
-        question="Resolve?",
+        question="Resolve dead?",
         reasoning="",
         branches=[Branch(id="e1", label="x")],
         parent_node_id=None,
         parent_branch_id=None,
         depth=1,
     )
-    push_click(sid, node4.id, "chat")
-    store.pause_session(sid, node4.id, None)
     n_v, redir_bid_v, err_v = store.apply_chat_result(
         sid=sid,
         node_id=node4.id,
         chat_id=uuid.uuid4().hex,
-        chat_summary="chat itself answered: pick x",
+        chat_summary="should not apply",
         outcome="resolve",
         ops=None,
     )
-    assert err_v is None and n_v is not None
-    assert n_v.chosen_branch_ids, "resolve must set chosen_branch_ids"
-    chosen = next(b for b in n_v.branches if b.id == n_v.chosen_branch_ids[0])
-    assert chosen.label, "synthesized branch must have a label"
-    print(f"OK — resolve synthesized chosen branch: '{chosen.label}'")
+    assert n_v is None and err_v is not None
+    assert "resolve" in err_v.lower() or "outcome" in err_v.lower(), \
+        f"resolve must be rejected: got {err_v}"
+    print(f"OK — resolve outcome rejected: {err_v}")
 
-    # ---- multi-mode + synth user_authored branch ----
+    # ---- multi-mode + synth user_authored branch from own_answer ----
     node5 = store.add_node(
         sid=sid,
         question="Pick all that apply?",
@@ -262,13 +257,13 @@ async def main():
         multi_select=True,
     )
     nid5 = node5.id
-    # user submits 2 checks + typed text → server synthesizes a 3rd branch.
+    # user submits 2 checks + Own Answer text → server synthesizes a 3rd branch.
     push_click(
         sid,
         nid5,
         "next",
         branch_ids=["m1", "m3"],
-        note="extra context the user typed",
+        own_answer="extra context the user typed",
     )
     batch5 = store.get_actions(nid5)
     assert batch5 and len(batch5) == 1
@@ -284,7 +279,7 @@ async def main():
     assert rec5.chosen_branch_labels[2] == synth.label
     print(f"OK — multi-mode submit synthesized branch '{synth.label}' alongside picks")
 
-    # min=1: empty submit (no picks, no note) is rejected
+    # min=1: empty submit (no picks, no own_answer) is rejected
     node6 = store.add_node(
         sid=sid,
         question="Empty submit?",
@@ -295,17 +290,19 @@ async def main():
         depth=0,
         multi_select=True,
     )
-    empty = GuiAction(session_id=sid, node_id=node6.id, action="next", branch_ids=[], note="   ")
+    empty = GuiAction(
+        session_id=sid, node_id=node6.id, action="next", branch_ids=[], own_answer="   "
+    )
     rec_empty = store.apply_action(empty)
     assert rec_empty is None, "empty multi-submit must be rejected"
     print("OK — empty multi-submit rejected (min=1)")
 
-    # action=other no longer in the literal — Pydantic must reject
+    # `chat` action removed from the literal — Pydantic must reject
     try:
-        GuiAction(session_id=sid, node_id=node6.id, action="other", note="hi")
-        raise AssertionError("action=other should no longer validate")
+        GuiAction(session_id=sid, node_id=node6.id, action="chat")
+        raise AssertionError("action=chat should no longer validate")
     except Exception:
-        print("OK — action=other rejected by schema literal")
+        print("OK — action=chat rejected by schema literal (ADR-0001)")
 
     print("\nALL SMOKE TESTS PASSED")
 

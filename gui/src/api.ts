@@ -1,8 +1,9 @@
 import type { SessionMeta } from "./types";
 
+// `chat` action removed — composer is always-visible (ADR-0001). chat starts
+// implicitly when the first chat_user_msg lands.
 export type ActionKind =
   | "next"
-  | "chat"
   | "stop_here"
   | "create_plan"
   | "implement_now"
@@ -14,10 +15,9 @@ export type ActionKind =
 export interface ActionOpts {
   // plural pick set for action=next (radio = length 1, multi = ≥1)
   branch_ids?: string[];
-  // single-id scope for action=chat (chat-on-row)
-  branch_id?: string;
-  // typed text — server synthesizes a user_authored Branch on next
-  note?: string;
+  // Own Answer text for action=next. Server synthesizes a user_authored
+  // Branch when non-empty.
+  own_answer?: string;
   // inline-chat: thread id (client-generated, stable for the chat lifetime)
   chat_id?: string;
   // inline-chat: per-message uuid (action=chat_user_msg)
@@ -45,8 +45,7 @@ export async function postAction(
     node_id,
     action,
     branch_ids: opts?.branch_ids ?? [],
-    branch_id: opts?.branch_id,
-    note: opts?.note,
+    own_answer: opts?.own_answer,
     chat_id: opts?.chat_id,
     msg_id: opts?.msg_id,
     text: opts?.text,
@@ -68,6 +67,27 @@ export async function postAction(
     throw rej;
   }
   if (!res.ok) throw new Error(`action ${action} failed: ${res.status}`);
+}
+
+// Best-effort telemetry ping when the user clicks a shortcut button.
+// Fire-and-forget; failures do not affect the UI.
+export function logShortcutPrefill(
+  session_id: string,
+  node_id: string,
+  shortcut: string,
+): void {
+  try {
+    fetch("/internal/telemetry/shortcut", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id, node_id, shortcut }),
+      keepalive: true,
+    }).catch(() => {
+      // best-effort
+    });
+  } catch {
+    // best-effort
+  }
 }
 
 export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {

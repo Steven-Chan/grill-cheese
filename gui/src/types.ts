@@ -3,20 +3,20 @@ export interface Branch {
   label: string;
   rationale: string;
   is_recommended: boolean;
-  // synth from a typed-text submit (next + note). Tagged in GUI.
+  // synth from a typed-text submit (next + own_answer). Tagged in GUI.
   user_authored?: boolean;
   child_node_id: string | null;
 }
 
 export type NodeKind = "decision" | "summary";
-export type ChatOutcome = "refine" | "redirect" | "resolve";
+// `resolve` removed — see docs/adr/0001-non-blocking-chat.md.
+export type ChatOutcome = "refine" | "redirect";
 
 export interface ChatBlock {
   chat_id: string;
   summary: string;
   outcome: ChatOutcome;
   applied_at: number;
-  branch_id?: string | null;
 }
 
 // inline-chat: live transcript msg, role = user | assistant.
@@ -36,6 +36,15 @@ export interface PendingProposal {
   ops?: { adds?: Branch[]; removes?: string[] } | null;
   summary: string;
   proposed_at: number;
+}
+
+// Composer-side primitive — a reference to a branch dragged/clicked into
+// the chat composer. Serializes inline in the wire message as
+// `[Branch <id>: <label>]`; the server stores the message verbatim and
+// Claude parses chips on read. Client-side state only — never on the wire.
+export interface ChipRef {
+  branch_id: string;
+  label: string;
 }
 
 export interface DecisionNode {
@@ -76,14 +85,13 @@ export interface DecisionNode {
   chats?: ChatBlock[];
   // true when chat outcome == "redirect" — node abandoned, greyed out
   redirected?: boolean;
-  // inline-chat: live transcript (pruned on Accept/Close)
+  // inline-chat: live transcript. Composer is always-visible; empty list
+  // = no chat thread started yet on this node.
   chat_messages?: ChatMessage[];
   // inline-chat: staged proposals from Claude. Multi-slot — N alternatives
   // user picks one of. Empty list when no proposals are staged. Whole list
   // replaced atomically on a fresh stage (no stacking).
   pending_proposals?: PendingProposal[];
-  // inline-chat: true between user clicking Chat and Accept/Close
-  chat_open?: boolean;
   // server-internal action buffer fields (persistence). GUI ignores.
   pending_actions?: unknown[];
   committed_actions?: unknown[];
@@ -97,11 +105,10 @@ export interface HookTrace {
   tool_response: Record<string, unknown>;
   timestamp: number;
   grill_node_id?: string | null;
-  // server-tagged when hook arrived during a chat session-paused state
-  chat_tag?: boolean;
 }
 
-export type SessionStatus = "active" | "paused" | "ended";
+// `paused` removed — non-blocking chat (ADR-0001).
+export type SessionStatus = "active" | "ended";
 
 // Deep-link coords for the cmux pane hosting this CC session. All fields
 // optional — workspace_id is the only one required to make any jump useful.
@@ -122,11 +129,6 @@ export interface SessionMeta {
   has_pending: boolean;
 }
 
-export interface PausedState {
-  node_id: string;
-  branch_id: string | null;
-}
-
 export type SseEvent =
   | { type: "hello"; session_id: string; payload: Record<string, unknown> }
   | { type: "ping"; session_id: string; payload: Record<string, unknown> }
@@ -135,13 +137,12 @@ export type SseEvent =
   | { type: "session_list"; session_id: ""; payload: { sessions: SessionMeta[] } }
   | { type: "session_ended"; session_id: string; payload: { summary: string; ended_at: number } }
   | { type: "session_deleted"; session_id: string; payload: { project: string } }
-  | { type: "session_paused"; session_id: string; payload: { node_id: string; branch_id: string | null } }
-  | { type: "session_resumed"; session_id: string; payload: Record<string, unknown> }
   | { type: "session_wrap"; session_id: string; payload: Record<string, unknown> }
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
-  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; note?: string | null; action: string; chat_branch_id?: string | null; chat_branch_label?: string | null }>; generate_docs?: boolean; docs_reason?: string | null } }
+  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; own_answer?: string | null; action: string }>; generate_docs?: boolean; docs_reason?: string | null } }
   | { type: "chat_message_added"; session_id: string; payload: { node_id: string; chat_id: string; message: ChatMessage; seq?: number } }
   | { type: "chat_proposals_staged"; session_id: string; payload: { node_id: string; proposals: PendingProposal[] } }
+  | { type: "chat_accepted"; session_id: string; payload: { node_id: string; chat_id: string; outcome: ChatOutcome | null; redirect_branch_id?: string | null } }
   | { type: "chat_closed"; session_id: string; payload: { node_id: string; chat_id: string } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };

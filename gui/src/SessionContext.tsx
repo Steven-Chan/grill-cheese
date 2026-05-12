@@ -69,15 +69,6 @@ export function SessionProvider({ sid, children }: Props) {
         case "session_ended":
           d({ type: "session_ended", summary: ev.payload.summary });
           break;
-        case "session_paused":
-          d({
-            type: "session_paused",
-            paused: { node_id: ev.payload.node_id, branch_id: ev.payload.branch_id },
-          });
-          break;
-        case "session_resumed":
-          d({ type: "session_resumed" });
-          break;
         case "session_wrap":
           d({ type: "session_wrap" });
           break;

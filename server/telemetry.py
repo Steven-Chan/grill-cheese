@@ -25,10 +25,11 @@ from .state import store
 # These are the only calls a turn should make AFTER present_branches /
 # present_summary — chat-resume + post-session-end housekeeping.
 _ALLOWLISTED_AFTER_PUSH = {
+    # apply_chat_result is now an escape hatch (ADR-0001) but stays
+    # allowlisted in case the skill falls back to it for crash recovery.
     "apply_chat_result",
     "get_session_snapshot",
     "end_session",
-    "resume_session_tool",
     "record_implicit_decision",
     # inline-chat: chat replies fire after a chat_message channel wake, not
     # a push wake; exempt from <100ms violation flag.
@@ -98,6 +99,22 @@ def log_notify(session_id: str, node_id: str, seq: int) -> None:
     _append(
         session_id,
         {"type": "notify", "node_id": node_id, "seq": seq, "ts": time.time()},
+    )
+
+
+def log_shortcut_prefill(session_id: str, node_id: str, shortcut: str) -> None:
+    """Called from /internal/telemetry/shortcut when the GUI fires a
+    composer shortcut button click (explain / check_impl / compare /
+    combine). Drives the rollout's "which shortcuts are valuable" signal.
+    """
+    _append(
+        session_id,
+        {
+            "type": "shortcut_prefill",
+            "node_id": node_id,
+            "shortcut": shortcut,
+            "ts": time.time(),
+        },
     )
 
 

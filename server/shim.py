@@ -321,14 +321,13 @@ async def _emit_chat_accepted_channel(
 ) -> None:
     """Map an SSE chat_accepted envelope to a notifications/claude/channel.
 
-    Fires after the GUI Accept commits a chat proposal (refine/redirect/
-    resolve). Without this wake, Claude has no signal Accept fired and the
-    GUI dead-ends on the now-locked card. Payload shape (type=chat_accepted):
-        {type, session_id, node_id, chat_id, outcome,
-         redirect_branch_id?, chosen_branch_id?}
-    redirect_branch_id is set only for outcome==redirect; chosen_branch_id
-    only for outcome==resolve. refine carries neither — the node stays
-    interactive and the skill picks the next move from the snapshot.
+    Fires after the GUI Accept commits a chat proposal (refine / redirect).
+    Without this wake the skill has no signal Accept fired. Payload shape
+    (type=chat_accepted):
+        {type, session_id, node_id, chat_id, outcome, redirect_branch_id?}
+    redirect_branch_id is set only for outcome==redirect. refine leaves
+    the node interactive; the skill picks the next move from the snapshot.
+    (`resolve` removed in ADR-0001 — non-blocking chat.)
     """
     payload = event_data.get("payload") or {}
     session_id = event_data.get("session_id") or ""
@@ -341,7 +340,6 @@ async def _emit_chat_accepted_channel(
         "chat_id": chat_id,
         "outcome": payload.get("outcome"),
         "redirect_branch_id": payload.get("redirect_branch_id"),
-        "chosen_branch_id": payload.get("chosen_branch_id"),
     }
     meta = {
         "session_id": str(session_id),

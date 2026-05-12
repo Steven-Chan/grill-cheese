@@ -1,9 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { postAction, type ActionKind, type ActionRejection } from "../api";
+import {
+  EditorContent,
+  Node,
+  NodeViewWrapper,
+  ReactNodeViewRenderer,
+  mergeAttributes,
+  useEditor,
+} from "@tiptap/react";
+import type { NodeViewProps } from "@tiptap/react";
+import type { Editor as CoreEditor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import { Plugin } from "@tiptap/pm/state";
+import {
+  logShortcutPrefill,
+  postAction,
+  type ActionKind,
+  type ActionRejection,
+} from "../api";
 import { useSession } from "../SessionContext";
 import type { ChatMessage, DecisionNode, PendingProposal } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
+
+// MIME used for branch-row drag payloads. Plain JSON in the body:
+// `{branch_id, label}`. Read by the Tiptap drop handler + the Own Answer
+// textarea drop listener.
+const CHIP_MIME = "application/x-grill-chip";
 
 // uuid for chat_id / msg_id. crypto.randomUUID() is available in all
 // browsers we target (Chrome/Edge/FF/Safari from 2022 onward) and in
@@ -74,29 +96,116 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
       node={node}
       sid={state.sid}
       onToast={onToast}
-      paused={state.status === "paused"}
       forceLocked={fromFallback}
     />
   );
 }
 
-// ---------- decision card ----------
+// ---------- branch chip (Tiptap node) ----------
 
-// sentinel id for the single-mode "Other" radio. Never sent to server — when
-// picked, branch_ids = [] and the note becomes the user-authored answer.
-const OTHER_PICK = "__other__";
+interface ChipAttrs {
+  branchId: string;
+  label: string;
+}
+
+function ChipView(props: NodeViewProps) {
+  const attrs = props.node.attrs as ChipAttrs;
+  return (
+    <NodeViewWrapper as="span" className="gc-branch-chip" contentEditable={false} draggable={false}>
+      <span className="gc-branch-chip-label">{attrs.label || "branch"}</span>
+    </NodeViewWrapper>
+  );
+}
+
+const BranchChipNode = Node.create({
+  name: "branchChip",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  draggable: false,
+  addAttributes() {
+    return {
+      branchId: { default: "" },
+      label: { default: "" },
+    };
+  },
+  parseHTML() {
+    return [{ tag: "span[data-branch-chip]" }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return [
+      "span",
+      mergeAttributes({ "data-branch-chip": "true", class: "gc-branch-chip" }, HTMLAttributes),
+      0,
+    ];
+  },
+  renderText({ node }) {
+    const a = node.attrs as ChipAttrs;
+    return `[Branch ${a.branchId}: ${a.label}]`;
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(ChipView);
+  },
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        props: {
+          handleDOMEvents: {
+            drop: (view, raw) => {
+              const event = raw as DragEvent;
+              const json = event.dataTransfer?.getData(CHIP_MIME);
+              if (!json) return false;
+              event.preventDefault();
+              let payload: { branch_id?: string; label?: string };
+              try {
+                payload = JSON.parse(json);
+              } catch {
+                return true;
+              }
+              if (!payload.branch_id) return true;
+              const pos = view.posAtCoords({
+                left: event.clientX,
+                top: event.clientY,
+              });
+              if (!pos) return true;
+              // posAtCoords can resolve INSIDE an existing atom (e.g. drop
+              // onto an existing chip). Resolve to the nearest valid text
+              // gap before inserting, otherwise the insert position lands
+              // mid-atom and ProseMirror clips it.
+              const $pos = view.state.doc.resolve(pos.pos);
+              const node = view.state.schema.nodes.branchChip.create({
+                branchId: payload.branch_id,
+                label: payload.label ?? "",
+              });
+              view.dispatch(view.state.tr.insert($pos.pos, node));
+              return true;
+            },
+            dragover: (_view, raw) => {
+              const event = raw as DragEvent;
+              if (event.dataTransfer?.types?.includes(CHIP_MIME)) {
+                event.preventDefault();
+              }
+              return false;
+            },
+          },
+        },
+      }),
+    ];
+  },
+});
+
+// ---------- decision card ----------
 
 function DecisionCard({
   node,
   sid,
   onToast,
-  paused,
   forceLocked,
 }: {
   node: DecisionNode;
   sid: string;
   onToast: (msg: string) => void;
-  paused: boolean;
   forceLocked?: boolean;
 }) {
   const multi = !!node.multi_select;
@@ -108,11 +217,15 @@ function DecisionCard({
     const s = new Set<string>();
     if (multi) {
       for (const b of live) if (b.is_recommended) s.add(b.id);
+    } else {
+      const rec = live.find((b) => b.is_recommended);
+      if (rec) s.add(rec.id);
     }
     return s;
   });
-  const [note, setNote] = useState("");
+  const [ownAnswer, setOwnAnswer] = useState("");
   const [busy, setBusy] = useState<ActionKind | null>(null);
+  const ownAnswerRef = useRef<HTMLTextAreaElement | null>(null);
 
   // reset selection when node identity changes
   useEffect(() => {
@@ -120,10 +233,13 @@ function DecisionCard({
       const s = new Set<string>();
       if (multi) {
         for (const b of live) if (b.is_recommended) s.add(b.id);
+      } else {
+        const rec = live.find((b) => b.is_recommended);
+        if (rec) s.add(rec.id);
       }
       return s;
     });
-    setNote("");
+    setOwnAnswer("");
   }, [node.id, multi, live]);
 
   const togglePick = (id: string) => {
@@ -139,31 +255,31 @@ function DecisionCard({
     }
   };
 
-  // single-mode: "Other" radio routes the typed note as the answer
-  const otherPicked = !multi && picked.has(OTHER_PICK);
-  const noteEnabled = multi || otherPicked;
-  const canSubmit = multi
-    ? picked.size > 0 || note.trim().length > 0
-    : otherPicked
-      ? note.trim().length > 0
-      : picked.size > 0;
-  // chat-resolve sets chosen_branch_ids server-side without flipping `committed`
-  // in our reducer, so treat any "already-answered" node as locked too.
-  // forceLocked covers the fallback-render case (no live pending, view kept on
-  // last card) where local committed/chosen state may not have caught up yet
-  // with the SSE event for the just-submitted action.
+  const canSubmit = picked.size > 0 || ownAnswer.trim().length > 0;
+  // committed = answer landed. forceLocked = fallback render (no live pending).
+  // Chat is non-blocking (ADR-0001) so chat_open/messages do NOT lock the card.
   const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
 
-  const send = async (action: ActionKind, opts?: { skipPicks?: boolean }) => {
+  const useAsDraft = (label: string, rationale: string) => {
+    const text = rationale ? `${label} — ${rationale}` : label;
+    setOwnAnswer(text);
+    // tick to ensure render lands before focus
+    setTimeout(() => {
+      const el = ownAnswerRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    }, 0);
+  };
+
+  const send = async (action: ActionKind) => {
     if (busy) return;
     setBusy(action);
     try {
-      const branch_ids = opts?.skipPicks
-        ? []
-        : Array.from(picked).filter((id) => id !== OTHER_PICK);
       await postAction(sid, node.id, action, {
-        branch_ids,
-        note: note.trim() || undefined,
+        branch_ids: Array.from(picked),
+        own_answer: ownAnswer.trim() || undefined,
       });
     } catch (e) {
       const rej = e as ActionRejection;
@@ -181,7 +297,7 @@ function DecisionCard({
 
   return (
     <>
-      <article className={`gc-bigcard${locked ? " locked" : ""}${paused ? " paused" : ""}`}>
+      <article className={`gc-bigcard${locked ? " locked" : ""}`}>
         <header className="gc-bigcard-head">
           {node.multi_select && <span className="gc-chip">multi-select</span>}
           <span className="gc-dim">depth {node.depth}</span>
@@ -193,7 +309,19 @@ function DecisionCard({
           {live.map((b) => {
             const checked = picked.has(b.id);
             return (
-              <li key={b.id} className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}`}>
+              <li
+                key={b.id}
+                className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}`}
+                draggable={!locked}
+                onDragStart={(e) => {
+                  if (locked) return;
+                  e.dataTransfer.effectAllowed = "copy";
+                  e.dataTransfer.setData(
+                    CHIP_MIME,
+                    JSON.stringify({ branch_id: b.id, label: b.label }),
+                  );
+                }}
+              >
                 <label>
                   <input
                     type={multi ? "checkbox" : "radio"}
@@ -209,53 +337,36 @@ function DecisionCard({
                     {b.rationale && <span className="gc-branch-rationale">{b.rationale}</span>}
                   </span>
                 </label>
+                <button
+                  type="button"
+                  className="gc-branch-use-as-draft"
+                  title="Use as draft for Own Answer"
+                  disabled={locked}
+                  onClick={() => useAsDraft(b.label, b.rationale)}
+                >
+                  use as draft
+                </button>
               </li>
             );
           })}
-          {!multi && (
-            <li className={`gc-branch gc-branch-other${otherPicked ? " checked" : ""}`}>
-              <label>
-                <input
-                  type="radio"
-                  name={`branch-${node.id}`}
-                  checked={otherPicked}
-                  disabled={locked}
-                  onChange={() => togglePick(OTHER_PICK)}
-                />
-                <span className="gc-branch-text">
-                  <span className="gc-branch-label">Other — type your own answer</span>
-                </span>
-              </label>
-            </li>
-          )}
         </ul>
 
-        <div className="gc-bigcard-note">
+        <div className="gc-bigcard-own-answer">
+          <label className="gc-own-answer-label gc-dim" htmlFor={`own-answer-${node.id}`}>
+            Your own answer (when no branch fits)
+          </label>
           <textarea
+            id={`own-answer-${node.id}`}
+            ref={ownAnswerRef}
             rows={2}
-            placeholder={
-              multi
-                ? "or type your own answer / redirect…"
-                : otherPicked
-                  ? "type your answer / redirect…"
-                  : "pick \"Other\" above to type your own answer"
-            }
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            disabled={locked || !noteEnabled}
+            placeholder="type your answer, or drag a branch's “use as draft” into here…"
+            value={ownAnswer}
+            onChange={(e) => setOwnAnswer(e.target.value)}
+            disabled={locked}
           />
         </div>
 
         <div className="gc-bigcard-actions">
-          <button
-            type="button"
-            className="gc-btn gc-btn-secondary"
-            disabled={locked || !!busy}
-            onClick={() => send("chat", { skipPicks: true })}
-            title="Open inline chat with Claude about this question"
-          >
-            Chat
-          </button>
           <button
             type="button"
             className="gc-btn gc-btn-primary"
@@ -266,22 +377,20 @@ function DecisionCard({
           </button>
         </div>
 
-        {!!node.committed && !paused && !node.chat_open && (
+        {!!node.committed && (
           <div className="gc-bigcard-locked-banner gc-dim">
             <span>settled — waiting for the next question…</span>
           </div>
         )}
       </article>
-      {node.chat_open && (
-        <ChatPanel node={node} sid={sid} onToast={onToast} />
-      )}
+      <ComposerPanel node={node} sid={sid} onToast={onToast} />
     </>
   );
 }
 
-// ---------- inline chat panel ----------
+// ---------- composer (always-visible) ----------
 
-function ChatPanel({
+function ComposerPanel({
   node,
   sid,
   onToast,
@@ -292,32 +401,43 @@ function ChatPanel({
 }) {
   const messages = node.chat_messages ?? [];
   const proposals = node.pending_proposals ?? [];
-  // first proposal's chat_id represents the thread; all share the same id
   const stagedChatId = proposals[0]?.chat_id ?? null;
 
-  // chat_id: stable for this chat thread. Persist via a staged proposal
-  // if one already exists (so Accept maps to the same chat_id Claude staged).
+  // chat_id: stable for this thread. Persist via a staged proposal if one
+  // already exists (so Accept maps to the same chat_id Claude staged).
   // Otherwise generate once and keep in a ref for the panel lifetime.
   const chatIdRef = useRef<string | null>(null);
   if (chatIdRef.current === null) {
     chatIdRef.current = stagedChatId ?? uuid();
   }
-  // re-sync chat_id when a proposal batch lands carrying a different one
-  // (e.g. a chat was opened pre-restart and Claude staged with a different id).
   useEffect(() => {
     if (stagedChatId && stagedChatId !== chatIdRef.current) {
       chatIdRef.current = stagedChatId;
     }
   }, [stagedChatId]);
 
-  const [draft, setDraft] = useState("");
+  // reset chat_id when node identity changes (drilled to a new card)
+  useEffect(() => {
+    chatIdRef.current = stagedChatId ?? uuid();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id]);
+
   const [busy, setBusy] = useState<"send" | "accept" | "close" | null>(null);
   const [pickedProposalId, setPickedProposalId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
+  const editor = useEditor({
+    extensions: [StarterKit.configure({ heading: false }), BranchChipNode],
+    content: "",
+    editorProps: {
+      attributes: {
+        class: "gc-composer-editor",
+        "aria-label": "Chat composer (drag branches to insert chips)",
+      },
+    },
+  });
+
   // Reset pick when a fresh proposal batch lands (whole list replaced).
-  // batchKey = joined proposal_ids → guaranteed to change across batches
-  // even if back-to-back stages share a proposed_at millisecond.
   const batchKey = proposals.map((p) => p.proposal_id).join(",");
   useEffect(() => {
     if (proposals.length === 1) {
@@ -338,18 +458,22 @@ function ChatPanel({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length, batchKey]);
 
-  const send = async (text: string) => {
-    if (busy) return;
-    const t = text.trim();
-    if (!t) return;
+  const sendCurrent = async () => {
+    if (busy || !editor) return;
+    // .getText() walks the doc and uses renderText() on each Node — branch
+    // chips serialize via BranchChipNode.renderText as `[Branch id: label]`
+    // inline in the message string. No structured content on the wire.
+    const text = serializeEditorText(editor);
+    const trimmed = text.trim();
+    if (!trimmed) return;
     setBusy("send");
     try {
       await postAction(sid, node.id, "chat_user_msg", {
         chat_id: chatIdRef.current ?? uuid(),
         msg_id: uuid(),
-        text: t,
+        text: trimmed,
       });
-      setDraft("");
+      editor.commands.clearContent();
     } catch (e) {
       const rej = e as ActionRejection;
       onToast(`Send failed: ${rej?.err ?? rej?.status ?? "network"}`);
@@ -374,34 +498,46 @@ function ChatPanel({
     }
   };
 
-  const close = async () => {
+  const clearThread = async () => {
     if (busy) return;
+    if (messages.length === 0 && proposals.length === 0) return;
     setBusy("close");
     try {
       await postAction(sid, node.id, "chat_close", {
         chat_id: chatIdRef.current ?? uuid(),
       });
+      // mint a fresh chat_id for the next thread
+      chatIdRef.current = uuid();
+      editor?.commands.clearContent();
     } catch (e) {
       const rej = e as ActionRejection;
-      onToast(`Close failed: ${rej?.err ?? rej?.status ?? "network"}`);
+      onToast(`Clear failed: ${rej?.err ?? rej?.status ?? "network"}`);
     } finally {
       setBusy(null);
     }
   };
 
+  const applyShortcut = (template: string, name: string) => {
+    if (!editor) return;
+    editor.chain().focus().clearContent().insertContent(template).run();
+    logShortcutPrefill(sid, node.id, name);
+  };
+
   return (
-    <section className="gc-chat-panel">
-      <header className="gc-chat-head">
-        <span className="gc-chat-title">chat</span>
-        <button
-          type="button"
-          className="gc-btn gc-btn-toolbar gc-chat-close"
-          aria-label="close chat"
-          disabled={!!busy}
-          onClick={close}
-        >
-          ×
-        </button>
+    <section className="gc-composer">
+      <header className="gc-composer-head">
+        <span className="gc-composer-title">chat</span>
+        {(messages.length > 0 || proposals.length > 0) && (
+          <button
+            type="button"
+            className="gc-btn gc-btn-toolbar gc-composer-clear"
+            disabled={!!busy}
+            onClick={clearThread}
+            title="clear chat thread"
+          >
+            clear
+          </button>
+        )}
       </header>
       {proposals.length > 0 && (
         <ProposalPicker
@@ -413,15 +549,18 @@ function ChatPanel({
           busy={busy === "accept"}
         />
       )}
-      <div ref={listRef} className="gc-chat-list">
-        {messages.length === 0 && (
-          <p className="gc-dim gc-chat-empty">Type a message to start the chat.</p>
+      <div ref={listRef} className="gc-composer-list">
+        {messages.length === 0 ? (
+          <p className="gc-dim gc-composer-empty">
+            Type a message — or click a shortcut below to prefill. Drag branches into the composer to insert chips.
+          </p>
+        ) : (
+          messages.map((m: ChatMessage) => (
+            <div key={m.msg_id} className={`gc-chat-msg gc-chat-msg-${m.role}`}>
+              <div className="gc-chat-bubble">{m.text}</div>
+            </div>
+          ))
         )}
-        {messages.map((m: ChatMessage) => (
-          <div key={m.msg_id} className={`gc-chat-msg gc-chat-msg-${m.role}`}>
-            <div className="gc-chat-bubble">{m.text}</div>
-          </div>
-        ))}
         {messages.length > 0 && messages[messages.length - 1].role === "user" && (
           <div className="gc-chat-msg gc-chat-msg-assistant" aria-label="assistant typing">
             <div className="gc-chat-bubble gc-chat-typing">
@@ -430,31 +569,74 @@ function ChatPanel({
           </div>
         )}
       </div>
-      <div className="gc-chat-input">
-        <textarea
-          rows={2}
-          placeholder="type a message…"
-          value={draft}
-          disabled={!!busy}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              void send(draft);
-            }
-          }}
-        />
+      <div className="gc-composer-shortcuts">
         <button
           type="button"
-          className="gc-btn gc-btn-primary"
-          disabled={!!busy || !draft.trim()}
-          onClick={() => void send(draft)}
+          className="gc-btn gc-btn-shortcut"
+          onClick={() => applyShortcut("Explain this question.", "explain")}
+          disabled={!!busy || !editor}
+          title="Prefill: Explain this question"
+        >
+          Explain
+        </button>
+        <button
+          type="button"
+          className="gc-btn gc-btn-shortcut"
+          onClick={() =>
+            applyShortcut("Check the current implementation related to this question.", "check_impl")
+          }
+          disabled={!!busy || !editor}
+          title="Prefill: Check the current implementation"
+        >
+          Check impl
+        </button>
+        <button
+          type="button"
+          className="gc-btn gc-btn-shortcut"
+          onClick={() => applyShortcut("Compare ▮ and ▮ (drag branches into the slots).", "compare")}
+          disabled={!!busy || !editor}
+          title="Prefill: Compare ▮ and ▮ (drag branches in)"
+        >
+          Compare
+        </button>
+        <button
+          type="button"
+          className="gc-btn gc-btn-shortcut"
+          onClick={() =>
+            applyShortcut("Can we combine ▮ and ▮ (drag branches into the slots)?", "combine")
+          }
+          disabled={!!busy || !editor}
+          title="Prefill: Combine ▮ and ▮ (drag branches in)"
+        >
+          Combine
+        </button>
+      </div>
+      <div className="gc-composer-input">
+        <EditorContent editor={editor} />
+        <button
+          type="button"
+          className="gc-btn gc-btn-primary gc-composer-send"
+          disabled={!!busy || !editor || isEditorEmpty(editor)}
+          onClick={() => void sendCurrent()}
         >
           {busy === "send" ? "sending…" : "Send"}
         </button>
       </div>
     </section>
   );
+}
+
+// Tiptap walks the doc and uses renderText() on each Node, joining at block
+// boundaries with newlines. Chips serialize via BranchChipNode.renderText.
+function serializeEditorText(editor: CoreEditor): string {
+  return editor.getText({
+    blockSeparator: "\n",
+  });
+}
+
+function isEditorEmpty(editor: CoreEditor | null): boolean {
+  if (!editor) return true;
+  return editor.isEmpty;
 }
 
 function ProposalPicker({
@@ -564,7 +746,7 @@ function SummaryCard({
     setBusy(action);
     try {
       await postAction(sid, node.id, action, {
-        note: action === "continue_grill" && note.trim() ? note.trim() : undefined,
+        own_answer: action === "continue_grill" && note.trim() ? note.trim() : undefined,
       });
     } catch (e) {
       const rej = e as ActionRejection;

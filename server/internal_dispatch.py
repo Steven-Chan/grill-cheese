@@ -19,7 +19,7 @@ import logging
 from . import mcp_app
 from .schemas import CmuxInfo
 from .state import store
-from .telemetry import log_next_call, log_notify
+from .telemetry import log_next_call, log_notify, log_shortcut_prefill
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ _TOOL_FUNCS = {
     "present_branches": mcp_app.present_branches,
     "present_summary": mcp_app.present_summary,
     "record_implicit_decision": mcp_app.record_implicit_decision,
-    "resume_session_tool": mcp_app.resume_session_tool,
+    # apply_chat_result is the crash-recovery escape hatch only (ADR-0001).
     "apply_chat_result": mcp_app.apply_chat_result,
     "post_chat_message": mcp_app.post_chat_message,
     "end_session": mcp_app.end_session,
@@ -93,4 +93,23 @@ async def internal_notify_endpoint(request: Request) -> Response:
     if not sid or not nid or not isinstance(seq, int):
         return JSONResponse({"error": "missing session_id/node_id/seq"}, status_code=400)
     log_notify(sid, nid, seq)
+    return JSONResponse({"ok": True})
+
+
+async def internal_shortcut_endpoint(request: Request) -> Response:
+    """POST {session_id, node_id, shortcut} from GUI — log a shortcut click.
+
+    Fire-and-forget. Surfaces composer shortcut usage in the per-session
+    JSONL log so the rollout can measure which templates are valuable.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    sid = body.get("session_id") or ""
+    nid = body.get("node_id") or ""
+    name = body.get("shortcut") or ""
+    if not sid or not name:
+        return JSONResponse({"error": "missing session_id/shortcut"}, status_code=400)
+    log_shortcut_prefill(sid, nid, name)
     return JSONResponse({"ok": True})

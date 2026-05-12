@@ -70,13 +70,11 @@ GUI actions and their server effect:
 
 | action            | commits the buffer? | side effect |
 |-------------------|---------------------|-------------|
-| `next`            | yes (`chosen_branch_ids` set, plural) | picks set on node; if `note` non-empty, server appends a synth `Branch(user_authored=True, label=note[:60])` to `node.branches` and includes its id in `chosen_branch_ids`. Min=1: must have ≥1 branch_id OR non-empty note. (Single-mode = list of length 1; multi-mode = ≥1.) |
-| `chat`            | yes (immediate flush)        | session paused, node locked. `branch_id` (singular) scopes per-row; result carries `chat_branch_id` / `chat_branch_label`. |
-| `stop`            | yes                          | summary card next, NOT end-of-session |
+| `next`            | yes (`chosen_branch_ids` set, plural) | picks set on node; if `own_answer` non-empty, server appends a synth `Branch(user_authored=True, label=own_answer[:60])` to `node.branches` and includes its id in `chosen_branch_ids`. Min=1: must have ≥1 branch_id OR non-empty own_answer. (Single-mode = list of length 1; multi-mode = ≥1.) |
 | `stop_here` / `create_plan` / `implement_now` | yes (auto-end) | server ends session in `hooks.py:actions_endpoint` |
 | `continue_grill`  | yes                          | synthesizes branch on summary node, session continues |
 
-(`other` was killed in the multi-choice rewrite — typed text now flows through `next + note` and becomes a `user_authored` Branch on the node.)
+Inline-chat actions (`chat_user_msg` / `chat_accept` / `chat_close`) bypass the click buffer — they're handled in `hooks.py:_handle_chat_action`. Chat is non-blocking (see `docs/adr/0001-non-blocking-chat.md`): no session pause, no node lock, no `chat` action commit. Composer is always-visible; chat starts implicitly when the first `chat_user_msg` lands. Outcomes available on `apply_chat_result` / inline `proposals` are `refine` and `redirect`; `resolve` was dropped in ADR-0001.
 
 Buffered with 750ms idle window; terminal-class clicks bypass via `flush_now`. Flush assigns a per-session monotonic `seq` and emits `node_committed` SSE → shim → channel notification.
 
@@ -90,10 +88,11 @@ Per-session channel + global channel (for the index page). Each session has a 50
 CC hook script (`scripts/install-hooks.sh` writes `~/.claude/grill-cheese/hook.js`) POSTs raw hook payload to `/hooks`. The grill-cheese skill injects `_grill_node_id` / `_grill_session_id` into `tool_input` so server can attach the trace to the right decision node. Without those, traces land in `_unbound` bucket. Hook script has 1s stdin + 1s HTTP hard-kill — never blocks Claude.
 
 ### Telemetry (`server/telemetry.py`)
-Per-session JSONL log at `~/.grill-cheese/project-<slug>/sessions/<sid>.events.jsonl`. Three event types:
+Per-session JSONL log at `~/.grill-cheese/project-<slug>/sessions/<sid>.events.jsonl`. Event types:
 - `push` — written from `present_branches` / `present_summary`
-- `next_call` — written from `internal_dispatch` for every tool call; flags `violation: true` when the gap from prior `push` is <100ms AND the tool isn't in the post-push allowlist (`apply_chat_result`, `get_session_snapshot`, `end_session`, `resume_session_tool`, `record_implicit_decision`)
+- `next_call` — written from `internal_dispatch` for every tool call; flags `violation: true` when the gap from prior `push` is <100ms AND the tool isn't in the post-push allowlist (`apply_chat_result`, `get_session_snapshot`, `end_session`, `record_implicit_decision`, `post_chat_message`)
 - `notify` — written via `/internal/telemetry/notify` POST from the shim every time it emits a channel notification
+- `shortcut_prefill` — written via `/internal/telemetry/shortcut` POST from the GUI when a composer shortcut button is clicked (`explain` / `check_impl` / `compare` / `combine`)
 
 `_last_push` in-memory map is cleared on `end_session` (and on summary auto-end in `hooks.py`) to prevent leak across many sessions.
 
@@ -109,7 +108,9 @@ GUI is `gui/`: React 18 + react-router-dom + react-markdown. No xyflow/dagre/zus
 - **Channels are stdio-only.** Don't try to add channel emit to the HTTP MCP path — it won't be delivered. The shim is the only correct place.
 - **Don't reintroduce `wait_for_action`.** Skill loop is push-and-end-turn; reverting to poll defeats the latency win and breaks the seq protocol.
 - **Don't add a single-call wrapper around push+wait.** Same duplicate-node bug as before. Push, end turn, channel wakes you.
+- **Don't reintroduce the `chat` action, session pause, node lock from chat, or the `resolve` outcome.** All removed in `docs/adr/0001-non-blocking-chat.md`. Composer is always-visible; chat starts implicitly when the first `chat_user_msg` lands.
 - **Pydantic schemas in `server/schemas.py`** are the contract for both MCP tool I/O and SSE events. Adding a field → update schema + GUI `gui/src/types.ts` + the channel payload shape in `server/shim.py:_emit_channel`.
+- **Domain glossary lives in `CONTEXT.md`.** Own Answer, Composer, Branch chip, Discussion shortcut, Close-match shortcut, Non-blocking chat. Pin new terms there first.
 - **Skill at `skill/grill-cheese/SKILL.md`** documents the channels protocol. If you change MCP tool surface or `node_committed` payload, update the skill — they're tightly coupled.
-- **Sessions persist** to `~/.grill-cheese/project-<slug>/sessions/<sid>.json`. Server restart rehydrates. Telemetry .jsonl is append-only; don't truncate without reason.
+- **Sessions persist** to `~/.grill-cheese/project-<slug>/sessions/<sid>.json`. Server restart rehydrates. Telemetry .jsonl is append-only; don't truncate without reason. Legacy session JSONs with `status="paused"`, `paused_node_id`, `paused_branch_id`, `outcome="resolve"`, or `chat_open` rehydrate via `extra="ignore"` — those fields are silently dropped.
 - **The shim uses `server._handle_message`** (private mcp lib API) to drive the session loop while owning the `ServerSession` handle. Will silently break if mcp lib renames the method or its signature changes; see comment in `server/shim.py:main` for context.

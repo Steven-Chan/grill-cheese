@@ -64,11 +64,13 @@ async def wrap_endpoint(request: Request) -> Response:
 
 
 async def actions_endpoint(request: Request) -> Response:
-    """POST from GUI: next / chat / summary verdicts.
+    """POST from GUI: next / summary verdicts / inline chat.
 
     Click flow: mutate node state immediately + broadcast node_updated, append
     record to per-node buffer, reset 750ms idle timer. Terminal-class clicks
     flush immediately. On flush the buffer is locked — further clicks 409.
+    Inline-chat actions (chat_user_msg / chat_accept / chat_close) bypass the
+    buffer; chat is non-blocking (ADR-0001).
     """
     try:
         raw = await request.json()
@@ -76,9 +78,9 @@ async def actions_endpoint(request: Request) -> Response:
     except Exception as e:
         return JSONResponse({"ok": False, "err": str(e)}, status_code=400)
 
-    if action.action == "next" and not action.branch_ids and not (action.note or "").strip():
+    if action.action == "next" and not action.branch_ids and not (action.own_answer or "").strip():
         return JSONResponse(
-            {"ok": False, "err": "next requires branch_ids or note"}, status_code=400
+            {"ok": False, "err": "next requires branch_ids or own_answer"}, status_code=400
         )
 
     # inline-chat: chat-track actions short-circuit before the click-buffer
@@ -115,10 +117,6 @@ async def actions_endpoint(request: Request) -> Response:
                 return JSONResponse(
                     {"ok": False, "err": "branch_removed"}, status_code=409
                 )
-            if action.action == "chat" and action.branch_id and action.branch_id in removed:
-                return JSONResponse(
-                    {"ok": False, "err": "branch_removed"}, status_code=409
-                )
 
     record = store.apply_action(action)
     if record is None:
@@ -133,10 +131,6 @@ async def actions_endpoint(request: Request) -> Response:
             if n_recheck:
                 removed = set(n_recheck.removed_branch_ids)
                 if action.action == "next" and any(b in removed for b in action.branch_ids):
-                    return JSONResponse(
-                        {"ok": False, "err": "branch_removed"}, status_code=409
-                    )
-                if action.action == "chat" and action.branch_id and action.branch_id in removed:
                     return JSONResponse(
                         {"ok": False, "err": "branch_removed"}, status_code=409
                     )
@@ -162,25 +156,6 @@ async def actions_endpoint(request: Request) -> Response:
     # branches; enqueue_action appends to node.pending_actions).
     if s:
         store._persist(s)
-
-    # chat: pause session immediately (preserves chat semantics for GUI banner).
-    if action.action == "chat":
-        _, changed = store.pause_session(
-            action.session_id, action.node_id, action.branch_id
-        )
-        if changed:
-            await store.broadcast(
-                action.session_id,
-                {
-                    "type": "session_paused",
-                    "session_id": action.session_id,
-                    "payload": {
-                        "node_id": action.node_id,
-                        "branch_id": action.branch_id,
-                    },
-                },
-            )
-            await store.broadcast_session_list()
 
     # Terminal-class clicks bypass the idle timer.
     if action.action in TERMINAL_ACTIONS:
@@ -310,15 +285,6 @@ async def _handle_chat_action(action: GuiAction) -> Response:
                 "payload": node.model_dump(),
             },
         )
-        # session is active again (apply_chat_result flipped status)
-        await store.broadcast(
-            action.session_id,
-            {
-                "type": "session_resumed",
-                "session_id": action.session_id,
-                "payload": {},
-            },
-        )
         await store.broadcast(
             action.session_id,
             {
@@ -328,17 +294,12 @@ async def _handle_chat_action(action: GuiAction) -> Response:
             },
         )
         # chat_accepted: synth wake hook for the shim. Mirrors node_committed
-        # in spirit — Claude has no other signal Accept fired, and without a
-        # wake the GUI dead-ends on the locked card waiting for the next
-        # present_branches push. Payload carries enough metadata for the
-        # skill to pick parent_branch_id without a snapshot round-trip.
+        # in spirit — without a wake the skill has no signal Accept fired.
+        # Non-blocking chat (ADR-0001): the node stays interactive after
+        # Accept, but the skill still needs to push the next present_branches
+        # for redirect / a follow-up question for refine.
         chat_block = node.chats[-1] if node.chats else None
         outcome = chat_block.outcome if chat_block else None
-        chosen_bid = (
-            node.chosen_branch_ids[0]
-            if outcome == "resolve" and node.chosen_branch_ids
-            else None
-        )
         await store.broadcast(
             action.session_id,
             {
@@ -349,7 +310,6 @@ async def _handle_chat_action(action: GuiAction) -> Response:
                     "chat_id": action.chat_id,
                     "outcome": outcome,
                     "redirect_branch_id": redirect_bid,
-                    "chosen_branch_id": chosen_bid,
                 },
             },
         )
@@ -359,7 +319,7 @@ async def _handle_chat_action(action: GuiAction) -> Response:
             resp["redirect_branch_id"] = redirect_bid
         return JSONResponse(resp)
 
-    # action == "chat_close"
+    # action == "chat_close" — clear thread (no lock to release).
     if not action.chat_id:
         return JSONResponse(
             {"ok": False, "err": "chat_close requires chat_id"},
@@ -374,14 +334,6 @@ async def _handle_chat_action(action: GuiAction) -> Response:
             "type": "node_updated",
             "session_id": action.session_id,
             "payload": node.model_dump(),
-        },
-    )
-    await store.broadcast(
-        action.session_id,
-        {
-            "type": "session_resumed",
-            "session_id": action.session_id,
-            "payload": {},
         },
     )
     await store.broadcast(
@@ -418,7 +370,7 @@ async def sessions_endpoint(request: Request) -> Response:
 
 async def delete_session_endpoint(request: Request) -> Response:
     """DELETE /sessions/{sid} → move to per-project trash/. Tears down active
-    + paused sessions too (GUI confirms first). 204 on success, 404 if no
+    sessions too (GUI confirms first). 204 on success, 404 if no
     such session."""
     sid = request.path_params.get("sid", "")
     ok = await store.delete_session(sid)
