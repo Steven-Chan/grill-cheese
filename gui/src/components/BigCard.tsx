@@ -48,64 +48,186 @@ interface Props {
   onClearSelection: () => void;
 }
 
+// Stage view: what BigCard currently renders. Drives the swap state machine.
+// `pastview` = sidebar history pin; `active` = live pending or fallback;
+// `idle` = no node at all. View key (`viewKey`) collapses `active` + fromFallback
+// to one key so the cross-fade does not fire when only forceLocked toggles.
+type StageView =
+  | { kind: "idle" }
+  | { kind: "pastview"; nodeId: string }
+  | { kind: "active"; nodeId: string };
+
+function viewKey(v: StageView): string {
+  if (v.kind === "idle") return "idle";
+  if (v.kind === "pastview") return `past:${v.nodeId}`;
+  return `active:${v.nodeId}`;
+}
+
+// total swap duration covers the slowest tail chunk (per-branch stagger
+// can land at 865ms + 360ms = ~1225ms for ≥6 branches; composer chunk lands
+// around 855ms + 360ms = ~1215ms). Tune alongside the CSS keyframe timings.
+// See ADR-0008 for the choreography (no specific numbers in the doc —
+// timings live in the CSS as the single source of truth).
+const SWAP_TOTAL_MS = 1250;
+
 export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
   const { state } = useSession();
 
-  // if pinned to a past node AND it's not the current pending, render read-only view
-  if (selectedNodeId && selectedNodeId !== state.pendingNodeId) {
-    const pinned = state.nodes[selectedNodeId];
-    if (!pinned) return null;
-    return (
-      <div className="gc-bigcard-pastview">
-        <button
-          type="button"
-          className="gc-btn gc-btn-toolbar gc-pastview-back"
-          onClick={onClearSelection}
-        >
-          ← back to current question
-        </button>
-        <HistoryEntry node={pinned} expanded />
-      </div>
-    );
-  }
-
-  // when there's no live pending question, keep the most recent card on screen
-  // (force-locked) so the view doesn't flash to a placeholder between submit
-  // and the next node arriving over SSE. Skip implicit (silent record-only)
-  // and redirected (settled-via-chat) nodes — neither should resurface as
-  // the visible card.
-  let pendingId = state.pendingNodeId;
-  const fromFallback = !pendingId;
-  if (!pendingId) {
-    for (let i = state.nodeOrder.length - 1; i >= 0; i--) {
-      const id = state.nodeOrder[i];
-      const n = state.nodes[id];
-      if (!n) continue;
-      if (n.implicit) continue;
-      if (n.redirected) continue;
-      pendingId = id;
-      break;
+  const targetView: StageView = useMemo(() => {
+    if (selectedNodeId && selectedNodeId !== state.pendingNodeId) {
+      if (state.nodes[selectedNodeId]) {
+        return { kind: "pastview", nodeId: selectedNodeId };
+      }
     }
-  }
-  if (!pendingId) {
-    return (
-      <div className="gc-bigcard gc-bigcard-idle">
-        <p className="gc-dim">waiting for the next question…</p>
-      </div>
+    let pendingId = state.pendingNodeId;
+    if (!pendingId) {
+      for (let i = state.nodeOrder.length - 1; i >= 0; i--) {
+        const id = state.nodeOrder[i];
+        const n = state.nodes[id];
+        if (!n) continue;
+        if (n.implicit) continue;
+        if (n.redirected) continue;
+        pendingId = id;
+        break;
+      }
+    }
+    if (!pendingId || !state.nodes[pendingId]) return { kind: "idle" };
+    return { kind: "active", nodeId: pendingId };
+  }, [selectedNodeId, state.pendingNodeId, state.nodes, state.nodeOrder]);
+
+  const targetKey = viewKey(targetView);
+
+  // Slot state. `prev` is the exiting view (null in steady state); `curr` is
+  // the live view. `direction` flips transform signs (down=forward, up=back).
+  // ADR-0008 + CONTEXT.md → "Card swap".
+  const [slots, setSlots] = useState<{
+    prev: StageView | null;
+    curr: StageView;
+    direction: "forward" | "back";
+  }>({ prev: null, curr: targetView, direction: "forward" });
+
+  // Skip the entrance animation on first BigCard mount per session
+  // (page reload, cmd+P swap). MIFB rule 13.
+  const isFirstSwapRef = useRef(true);
+  const cleanupTimerRef = useRef<number | null>(null);
+
+  // Derive curr key as a string so the swap effect doesn't fire on
+  // object-identity changes (e.g. live SSE node_updated rebuilds state.nodes
+  // → new targetView object → same key).
+  const currKey = viewKey(slots.curr);
+
+  useEffect(() => {
+    if (currKey === targetKey) return;
+    if (isFirstSwapRef.current) {
+      // First mount or first computed view — land in final state instantly.
+      isFirstSwapRef.current = false;
+      setSlots({ prev: null, curr: targetView, direction: "forward" });
+      return;
+    }
+    // Entering pastview = back. Leaving pastview (or active→active) = forward.
+    const dir: "forward" | "back" =
+      targetView.kind === "pastview" ? "back" : "forward";
+    setSlots((s) => ({ prev: s.curr, curr: targetView, direction: dir }));
+    // Clear any prior pending cleanup (a second swap started before the
+    // first one finished — kill the old timer so it doesn't wipe the new
+    // prev slot prematurely). Then schedule fresh cleanup. We deliberately
+    // do NOT return an effect-cleanup that clears this timer: setSlots
+    // above bumps `currKey`, which would re-fire this effect and tear down
+    // the timer we just scheduled. Component-unmount cleanup is handled
+    // by a separate effect below.
+    if (cleanupTimerRef.current != null) {
+      window.clearTimeout(cleanupTimerRef.current);
+    }
+    cleanupTimerRef.current = window.setTimeout(() => {
+      setSlots((s) => ({ prev: null, curr: s.curr, direction: s.direction }));
+      cleanupTimerRef.current = null;
+    }, SWAP_TOTAL_MS);
+  }, [targetKey, targetView, currKey]);
+
+  // Only clear the timer on full component unmount.
+  useEffect(
+    () => () => {
+      if (cleanupTimerRef.current != null) {
+        window.clearTimeout(cleanupTimerRef.current);
+        cleanupTimerRef.current = null;
+      }
+    },
+    [],
+  );
+
+  // `fromFallback` reflects current store state, not the view's historic
+  // value. Acceptable: for the exiting prev slot it doesn't affect visuals
+  // (the card is animating off); for curr it correctly tracks live state.
+  const fromFallback = !state.pendingNodeId;
+
+  const renderView = (v: StageView) => {
+    if (v.kind === "idle") {
+      return (
+        <div className="gc-bigcard gc-bigcard-idle">
+          <p className="gc-dim">waiting for the next question…</p>
+        </div>
+      );
+    }
+    if (v.kind === "pastview") {
+      const pinned = state.nodes[v.nodeId];
+      if (!pinned) return null;
+      return (
+        <div className="gc-bigcard-pastview">
+          <button
+            type="button"
+            className="gc-btn gc-btn-toolbar gc-pastview-back"
+            onClick={onClearSelection}
+          >
+            ← back to current question
+          </button>
+          <HistoryEntry node={pinned} expanded />
+        </div>
+      );
+    }
+    const node = state.nodes[v.nodeId];
+    if (!node) return null;
+    return node.kind === "summary" ? (
+      <SummaryCard
+        key={node.id}
+        node={node}
+        sid={state.sid}
+        onToast={onToast}
+        forceLocked={fromFallback}
+      />
+    ) : (
+      <DecisionCard
+        key={node.id}
+        node={node}
+        sid={state.sid}
+        onToast={onToast}
+        forceLocked={fromFallback}
+      />
     );
-  }
-  const node = state.nodes[pendingId];
-  if (!node) return null;
-  return node.kind === "summary" ? (
-    <SummaryCard key={node.id} node={node} sid={state.sid} onToast={onToast} forceLocked={fromFallback} />
-  ) : (
-    <DecisionCard
-      key={node.id}
-      node={node}
-      sid={state.sid}
-      onToast={onToast}
-      forceLocked={fromFallback}
-    />
+  };
+
+  const dirClass = slots.direction === "back" ? " back" : "";
+
+  return (
+    <div className="gc-bigcard-stage">
+      {slots.prev && (
+        <div
+          className={`gc-bigcard-slot exiting${dirClass}`}
+          aria-hidden="true"
+          // `inert` removes the receding card from tab order during the
+          // 150ms exit window — pointer-events:none alone leaves it
+          // keyboard-reachable. Baseline in all modern browsers.
+          // @ts-expect-error inert is valid HTML but TS DOM types lag.
+          inert=""
+        >
+          {renderView(slots.prev)}
+        </div>
+      )}
+      <div
+        className={`gc-bigcard-slot${slots.prev ? " entering" : ""}${dirClass}`}
+      >
+        {renderView(slots.curr)}
+      </div>
+    </div>
   );
 }
 
