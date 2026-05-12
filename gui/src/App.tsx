@@ -6,6 +6,7 @@ import { useOverlay } from "./OverlayContext";
 import { PerformancePage } from "./pages/PerformancePage";
 import { SessionListPage } from "./pages/SessionListPage";
 import { SessionDetailPage } from "./pages/SessionDetailPage";
+import { SetupPage } from "./pages/SetupPage";
 
 export default function App() {
   // Window-level shortcuts mounted once at the root so Cmd+P / ? work on
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/sessions" element={<SessionListPage />} />
         <Route path="/sessions/:sid" element={<SessionDetailPage />} />
         <Route path="/performance" element={<PerformancePage />} />
+        <Route path="/setup" element={<SetupPage />} />
         <Route path="*" element={<Navigate to="/sessions" replace />} />
       </Routes>
       {active === "cheatsheet" && <CheatsheetModal onClose={() => setOverlay(null)} />}

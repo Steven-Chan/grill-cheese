@@ -95,6 +95,19 @@ export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {
   return r.json();
 }
 
+// fs probes for the /setup checklist. Cheap server-side; no caching here.
+export interface SetupStatus {
+  skill: boolean;
+  hooks: boolean;
+  mcp: boolean;
+}
+
+export async function fetchSetupStatus(): Promise<SetupStatus> {
+  const r = await fetch("/api/setup-status");
+  if (!r.ok) throw new Error(`setup-status failed: ${r.status}`);
+  return r.json();
+}
+
 export async function fetchPerformance(): Promise<PerformanceEntry[]> {
   const r = await fetch("/api/performance");
   if (!r.ok) throw new Error(`performance fetch failed: ${r.status}`);
