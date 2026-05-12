@@ -73,6 +73,15 @@ Source of truth for terminology. Read this before edits that touch the decision-
   - Kept: title, brief preview, project chip, id-slice + relative time, delete X.
 - **Project axis** — global flat list across projects. No filter, no grouping, no rail. Project chip on each row.
 
+## Retrospective workflow
+
+- **Retro session** — grill-cheese session whose brief is composed from disagreement data across prior ended sessions of the same project. `Session.kind == "retro"`. Reviews proposed actions, one (or grouped) per decision node. Excluded from future retros' input windows (a retro doesn't retro itself).
+- **Proposal node** — decision node inside a retro session. Branches represent how to address an observed disagreement pattern. Shape is the agent's call per node: accept/reject/refine, alternative-action competition, or hybrid. No fixed schema; categorization explicitly dropped.
+- **Action surface** — what a proposal can edit. Four surfaces only: project docs (repo `CLAUDE.md` / ADRs / `CONTEXT.md`), skill files (`~/.claude/skills/*`), global `~/.claude/CLAUDE.md`, source code of this app. Anything outside is out of bounds for v1.
+- **Retro marker** — `~/.grill-cheese/project-<slug>/.last-retro` (text file, single ISO-8601 timestamp). Bounds the input window — retro reads only ended sessions whose `ended_at > marker_ts`. Updated on retro session end for terminal verdicts (`stop_here` / `create_plan` / `implement_now`).
+- **Disagreement pattern** — agent-narrated theme aggregating multiple disagreed nodes by reading raw question + branch labels + `own_answer` text + chat transcripts. No taxonomy. Multi-pattern grouping is the agent's judgment at retro time.
+- **Retro trigger** — GUI button on `/performance` posts to `POST /api/retro`; server shell-execs cmux to spawn a fresh CC panel running `/retro` (see ADR-0006). Slash command `/retro` works directly from any CC terminal as a fallback.
+
 ## Ambiguities flagged
 
 - The legacy GUI wire field `note` was overloaded — historically used as both "user's own answer" and "annotation on a branch pick". v1 of the redesign collapses this onto the new `own_answer` field. Old session JSONs may still carry `note`; the rehydrate path silently ignores unknown fields (`model_config = {"extra": "ignore"}`).
