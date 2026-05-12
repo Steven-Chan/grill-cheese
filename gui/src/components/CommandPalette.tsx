@@ -58,20 +58,20 @@ export function CommandPalette() {
   const [focusIdx, setFocusIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
-  const lastFocusRef = useRef<HTMLElement | null>(null);
 
   const open = active === "palette";
 
   // Capture prior focus + autofocus input on open; restore on close.
+  // Closure over `prior` (not a ref) — StrictMode double-invoke would
+  // otherwise mid-cycle overwrite the ref with the just-focused input.
   useEffect(() => {
     if (!open) return;
-    lastFocusRef.current = document.activeElement as HTMLElement | null;
+    const prior = document.activeElement as HTMLElement | null;
     setQuery("");
     setFocusIdx(0);
-    // Defer focus to next frame — overlay just rendered.
     queueMicrotask(() => inputRef.current?.focus());
     return () => {
-      lastFocusRef.current?.focus?.();
+      prior?.focus?.();
     };
   }, [open]);
 

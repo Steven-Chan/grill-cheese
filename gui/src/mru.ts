@@ -37,9 +37,15 @@ export function bumpMru(id: string): void {
   }
 }
 
-// Sort sessions for the palette. Order: needs-you → MRU-recent
-// (localStorage timestamp, falling back to started_at for never-visited) →
-// ended last. Stable within each band.
+// Sort sessions for the palette. Bands: needs-you → active (by recency) →
+// ended (by recency). Stable within each band.
+//
+// Recency for active sessions = MRU timestamp if visited, else
+// `started_at * 1000`. started_at is server epoch SECONDS; bumpMru writes
+// Date.now() MS. Scaling unifies the units AND surfaces fresh
+// never-visited sessions near the top — a session just created via
+// start_session is something the user likely wants to jump into, even
+// though they haven't visited it yet.
 export function rankSessions(sessions: SessionMeta[], mru: Mru = getMru()): SessionMeta[] {
   const scored = sessions.map((s, idx) => ({
     s,
