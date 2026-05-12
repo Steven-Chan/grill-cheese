@@ -229,12 +229,20 @@ class Store:
         multi_select: bool = False,
         generate_docs: bool = False,
         docs_reason: Optional[str] = None,
+        progress: Optional[float] = None,
     ) -> Node:
         s = self.sessions[sid]
         node_id = uuid.uuid4().hex[:10]
         for b in branches:
             if not b.id:
                 b.id = uuid.uuid4().hex[:8]
+        # honest-shrink progress: clamp to [0,1] silently. ADR-0007.
+        # accept str "0.1" too — CC sometimes ships floats as strings.
+        if progress is not None:
+            try:
+                progress = max(0.0, min(1.0, float(progress)))
+            except (TypeError, ValueError):
+                progress = None
         node = Node(
             id=node_id,
             parent_node_id=parent_node_id,
@@ -250,6 +258,7 @@ class Store:
             multi_select=multi_select,
             generate_docs=generate_docs,
             docs_reason=docs_reason,
+            progress=progress,
         )
         s.nodes[node_id] = node
         if s.root_node_id is None:
