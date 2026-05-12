@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import time
 from pathlib import Path
 
@@ -551,7 +552,9 @@ async def retro_endpoint(request: Request) -> Response:
     # If it doesn't, the panel opens at Claude's prompt and the user types
     # `/retro` manually — same as the bare-fallback case, just one keystroke.
     workspace_name = f"retro: {project}"
-    initial_cmd = f"claude '/retro {project}'"
+    # shlex.quote defends against unusual project slugs with quotes/spaces;
+    # the value lands in a shell-parsed command line inside cmux's terminal.
+    initial_cmd = f"claude /retro {shlex.quote(project)}"
     args = [
         "new-workspace",
         "--name", workspace_name,
@@ -561,11 +564,11 @@ async def retro_endpoint(request: Request) -> Response:
     ]
     rc, err = await _run_cmux(bin_path, args, None)
     if rc != 0:
-        logger.warning("retro: cmux new-panel rc=%s err=%s", rc, err[:200])
+        logger.warning("retro: cmux new-workspace rc=%s err=%s", rc, err[:200])
         return JSONResponse({
             "ok": False,
             "empty": False,
-            "err": f"cmux new-panel rc={rc}: {err[:200]}",
+            "err": f"cmux new-workspace rc={rc}: {err[:200]}",
             "fallback": "Run `/retro` in any Claude Code terminal",
         }, status_code=502)
     return JSONResponse({

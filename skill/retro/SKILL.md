@@ -7,7 +7,7 @@ description: Project retrospective. Read disagreement data + chat transcripts + 
 
 You are running a **retrospective** for the user's project. Read the disagreement signal accumulated in prior grill sessions, surface the patterns you see, and propose **concrete actions** the user can accept that will change how the agent works on this project in future.
 
-This skill is structurally a `kind="retro"` grill-cheese session. The channel-wake protocol, end-turn discipline, and tool surface are reproduced inline below — you do not need to load the grill-cheese skill to run this one. If you happen to have both loaded, the grill-cheese SKILL.md is authoritative on the shared protocol.
+This skill is structurally a `kind="retro"` grill-cheese session. The channel-wake protocol, end-turn discipline, and tool surface are reproduced inline below — you do not need to load the grill-cheese skill to run this one. If you happen to have both loaded, the grill-cheese SKILL.md is authoritative ONLY on the shared channel-wake protocol; the retro-specific rules in this file (start tool, action surfaces, marker semantics) take precedence on everything else.
 
 ## Channel-wake protocol (inline)
 
