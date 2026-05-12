@@ -17,6 +17,7 @@ export function SessionListPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [brandMode, setBrandMode] = useState<"fire" | "cheese">("fire");
   const [showAllEnded, setShowAllEnded] = useState(false);
+  const [clearingEnded, setClearingEnded] = useState(false);
   const dispatchRef = useRef(dispatch);
   dispatchRef.current = dispatch;
 
@@ -81,6 +82,24 @@ export function SessionListPage() {
     }
   };
 
+  const onClearEnded = async () => {
+    if (clearingEnded || ended.length === 0) return;
+    const ok = window.confirm(
+      `Delete all ${ended.length} ended session${ended.length === 1 ? "" : "s"}?\nMoves to trash; wiped on next server restart.`
+    );
+    if (!ok) return;
+    setClearingEnded(true);
+    try {
+      const results = await Promise.allSettled(ended.map((s) => deleteSession(s.id)));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) {
+        setToast(`${failed} of ${ended.length} deletes failed`);
+      }
+    } finally {
+      setClearingEnded(false);
+    }
+  };
+
   const pick = (s: SessionMeta) => navigate(`/sessions/${s.id}`);
 
   return (
@@ -121,7 +140,21 @@ export function SessionListPage() {
             ))}
           </ListSection>
 
-          <ListSection title="Ended" count={ended.length}>
+          <ListSection
+            title="Ended"
+            count={ended.length}
+            actions={
+              <button
+                type="button"
+                className="gc-section-clear"
+                onClick={onClearEnded}
+                disabled={clearingEnded}
+                title="Delete all ended sessions"
+              >
+                {clearingEnded ? "clearing…" : "clear all"}
+              </button>
+            }
+          >
             {visibleEnded.map((s) => (
               <SessionRow
                 key={s.id}

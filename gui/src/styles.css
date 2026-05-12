@@ -157,13 +157,38 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 
 .gc-list-section { display: flex; flex-direction: column; gap: 8px; }
 .gc-list-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--gc-fg-dim);
   font-weight: 500;
 }
+.gc-list-section-actions { display: flex; gap: 8px; }
 .gc-count { color: var(--gc-fg-faint); font-weight: 400; }
+
+.gc-section-clear {
+  background: transparent;
+  border: 1px solid var(--gc-edge);
+  color: var(--gc-fg-faint);
+  padding: 2px 10px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
+}
+.gc-section-clear:hover {
+  border-color: rgba(232, 142, 93, 0.5);
+  color: var(--gc-warn);
+  background: rgba(232, 142, 93, 0.06);
+}
+.gc-section-clear:disabled { opacity: 0.5; cursor: progress; }
 
 .gc-ended-toggle-wrap { list-style: none; display: flex; justify-content: center; margin-top: 4px; }
 .gc-ended-toggle {
