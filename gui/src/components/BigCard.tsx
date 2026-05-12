@@ -496,6 +496,10 @@ function DecisionCard({
   // Digit 1-9 is a type-ahead jump to the matching hint-chip index.
   const onListKeyDown = (e: React.KeyboardEvent<HTMLUListElement>) => {
     if (locked || live.length === 0) return;
+    // Own-answer textarea lives inside the listbox; ignore bubbled keys from
+    // form fields so typing (space, digits, arrows) isn't hijacked.
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === "TEXTAREA" || tag === "INPUT") return;
     const idx = focusedBranchId
       ? live.findIndex((b) => b.id === focusedBranchId)
       : -1;
