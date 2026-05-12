@@ -11,6 +11,8 @@ Source of truth for terminology. Read this before edits that touch the decision-
 - **Recommended (★)** — single-mode: one branch marked, pre-selected. Multi-mode: any subset pre-checked as the recommended set.
 - **★ initial focus** — on render, keyboard focus lands on the recommended branch (single-mode) or the first ★ branch (multi-mode; first live branch if none). `Enter` from there picks AND submits in single-mode without any other keystroke. See ADR-0004.
 - **Hint chip** — small monospace badge (`1`, `2`, `3`, `4`) in each branch row corner. Always visible but visually quiet. Doubles as the index inside the `@`-mention popup so muscle memory carries between surfaces. Distinct from Branch chip (the composer drop target).
+- **Progress bar** — 1–2px ambient bar between the session-detail header and the body. Fed by `Node.progress` of the latest pushed node. Spans the viewport; quiet, persistent, ignorable. Distinct from `ScoreChip` (per-row terminal-state badge on `/`) and from `/performance` (cross-session retrospective). Lives only inside an open session — never on session list rows. See ADR-0007.
+- **Progress estimate** — value Claude emits on each `present_branches` / `present_summary`. Float in `[0,1]`, server-clamped. Optional; absence hides the Progress bar entirely. `present_summary` overrides to `1.0` server-side. Re-estimated per push; downward changes (scope grew → user redirected deeper) animate honestly without monotonic clamp — see ADR-0007.
 
 ## Keyboard model
 

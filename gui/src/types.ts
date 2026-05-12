@@ -100,6 +100,11 @@ export interface DecisionNode {
   // null for summary, implicit, and multi-mode with zero recommendations.
   // See CONTEXT.md "Recommendation score" + ADR-0003.
   recommendation_score?: number | null;
+  // honest progress fraction in [0,1] emitted by Claude on each push.
+  // null = indeterminate barber-pole stripe. Summary nodes pin to 1.0
+  // server-side. Downward changes are honest (no monotonic clamp).
+  // See ADR-0007.
+  progress?: number | null;
 }
 
 export interface HookTrace {

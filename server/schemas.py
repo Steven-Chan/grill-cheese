@@ -107,6 +107,12 @@ class Node(BaseModel):
     # with zero recommendations. Computed once at `next` commit in _flush;
     # never recomputed. See CONTEXT.md + ADR-0003.
     recommendation_score: Optional[float] = None
+    # honest progress fraction in [0,1] or None. Emitted by Claude on each
+    # present_branches push (best-guess "how close to done"). Server clamps
+    # to [0,1]; present_summary overrides to 1.0. None hides the GUI bar
+    # entirely. Downward changes are honest — bar shrinks on scope growth.
+    # See ADR-0007.
+    progress: Optional[float] = None
     # accumulating chat history applied to this node
     chats: list[ChatBlock] = Field(default_factory=list)
     # set when chat outcome == "redirect" — node abandoned, child carries new question

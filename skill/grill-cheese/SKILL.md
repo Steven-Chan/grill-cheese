@@ -33,7 +33,9 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 
 2. **Generate the next question.** Identify the *single most important live decision* given everything you know so far (the brief + every answer the user has given). Frame it as one focused question, like /grill-me would. Generate **2–4 candidate answers** as branches with one-sentence rationales. Single-mode (default): mark exactly one `is_recommended: true`. Multi-mode (set `multi_select=True`): mark every branch you'd pick (zero or more); GUI auto-checks all ★ on render.
 
-3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth, multi_select?)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
+3. **Push the node and END YOUR TURN.** Call `present_branches(session_id, question, branches, reasoning, parent_node_id?, parent_branch_id?, depth, multi_select?, progress?)`. Returns immediately with `{node_id, instruction}`. The `instruction` field literally says `TURN_OVER. Stop generating. ...` — honor it. Do NOT call any other tool. Do NOT write more text. The grill-cheese channel will wake you with the user's action.
+
+   Pass `progress: <float in [0,1]>` — your honest best-guess fraction of how complete the session is *after* this push lands. Re-estimate every push; downward is fine (and expected) when the user redirects deeper. Absent hides the GUI bar entirely; treat presence as the default so the user gets the ambient signal. See ADR-0007.
 
 4. **On wake — read the `<channel>` block.** When you see input that contains a `<channel source="grill-cheese" ...>` block (in the user message), parse its JSON content. Three payload shapes:
 
@@ -122,6 +124,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 - **END YOUR TURN after every `present_branches` and `present_summary` call.** The tool result's `instruction` field is the explicit signal. Do not call other tools, do not generate further text. The channel will wake you with the action. Generating after the push wastes tokens and breaks the latency win — the whole point of channels-mode is that you sit out the user's think-time.
 - **Use the `antml:parameter` namespace prefix on EVERY param.** When the prefix is missing on `branches` (e.g. `<parameter name="branches">` instead of `<parameter name="branches">`), the harness silently drops the field. Pydantic then errors with `branches Field required` even though it was written. The error message is misleading — the param was sent, just under the wrong namespace, and stripped before the tool saw it. Same risk for any parameter, but `branches` is the one that bites because it's the largest and easiest to lose track of when copy-pasting.
 - **2–4 branches per node.** Two if truly binary; up to four when the design space splits more. Never one. Never five. The typed-text input is added by the GUI automatically (in both modes) — do not add an "Other" branch yourself; the user's typed answer is synthesized into a `user_authored` branch on submit.
+- **Emit `progress` on every `present_branches`.** Best-guess fraction in `[0,1]` of how complete the session is after this push lands. Optional — server accepts absence — but missing hides the GUI bar entirely; treat presence as the default so the user gets the ambient signal. Honest re-estimation: it is fine (and expected) for the value to go down when the user redirects to deeper scope. Do NOT pass `progress` on `present_summary` — server overrides to `1.0`. See ADR-0007.
 - **Recommendation (`is_recommended: true`):** Single-mode → mark exactly one (your honest pick, used as tiebreaker). Multi-mode → mark every branch you'd recommend (zero or more); GUI pre-checks them all so the user can submit your set with one click.
 - **Use `multi_select=True`** when the question genuinely admits multiple simultaneous picks ("which of these concerns matter to you?", "which datacenters?"). Default is single-mode. If only one answer makes sense, leave it false.
 - **Each branch carries a `rationale` string** (one sentence, why this option is plausible). Don't pad. Don't repeat the question.
@@ -245,7 +248,7 @@ End-of-session always goes through a **summary verdict card**. Never call `end_s
 Flow:
 
 1. User clicks **wrap up** (toolbar) → channel wake delivers a session-level `{type: "session_wrap", session_id}` block (shape B). NO `node_id`, NO `actions[]`. The pre-wrap pending node — if any — is now read-only in the history sidebar; the server gates further `next` on it.
-2. Call `present_summary(session_id, summary=<markdown recap of the chain so far>, parent_node_id=<latest decision node id, optional>, parent_branch_id=<a chosen branch id, optional>)`. Returns `{node_id, instruction}` for the new summary card. END TURN.
+2. Call `present_summary(session_id, summary=<markdown recap of the chain so far>, parent_node_id=<latest decision node id, optional>, parent_branch_id=<a chosen branch id, optional>)`. Returns `{node_id, instruction}` for the new summary card. END TURN. (No need to pass `progress` here — the server overrides the bar to `1.0` on summary. Anything you pass is silently ignored. See ADR-0007.)
 3. Next channel wake delivers the verdict action on the summary node:
    - `stop_here` — user approves, no follow-up. Server has ended the session. Point user at the export. If you set `generate_docs=true` on `present_summary`, the export carries a `## Docs flagged but not planned` section with your `docs_reason` — that is the signal preserved for a future re-grill.
    - `create_plan` — user approves, wants a plan first. `chain_markdown` is the full chosen-path recap. Use it to write a detailed implementation plan (markdown doc, ordered tasks, file-level breakdown). If `generate_docs=true` was set, the plan **must** lead with `## Doc changes` (CONTEXT.md edits + new ADR files) and follow with `## Code changes` referencing the doc steps as prerequisites. One plan, ordered. Server has ended the session.
@@ -274,7 +277,8 @@ present_branches(
     {label: "Usage-based", rationale: "Aligns price with value but needs metering infra"},
     {label: "Hybrid (base + overage)", rationale: "Compromise; common for B2B but adds billing complexity"}
   ],
-  depth=0
+  depth=0,
+  progress=0.1                                                  # keystone, lots ahead — ~10% done
 )
 → {node_id: "n1", instruction: "TURN_OVER. ..."}
 # END TURN. No further tools, no further text.
@@ -294,6 +298,7 @@ present_branches(
   parent_branch_id="b2",
   depth=1,
   question="Metering: track in-app or via Stripe Meters API?",
+  progress=0.25,                                                # drilling — ~25%
   ...
 )
 → {node_id: "n2", instruction: "TURN_OVER. ..."}
@@ -302,10 +307,11 @@ present_branches(
 # ... user types into the always-visible textarea: "actually I haven't decided on Stripe yet — ask me about payment processor first" ...
 # Channel wakes with seq=1, action=next; chosen_branch_labels carries the
 # user_authored synth branch (label = first 60ch of typed text), and `note`
-# carries the full text. Treat as a redirect:
+# carries the full text. Treat as a redirect — scope GREW; progress goes DOWN:
 present_branches(
   session_id="ab12cd34",
   question="Stripe, Paddle, or roll your own?",
+  progress=0.15,                                                # honest-shrink: scope grew, bar shrinks
   ...
 )
 → {node_id: "n3", instruction: "TURN_OVER. ..."}
@@ -326,6 +332,7 @@ present_branches(
     {"label": "SOC2", "rationale": "Required by enterprise procurement"},
     {"label": "GDPR DSR", "rationale": "Customer data deletion endpoints"},
   ],
+  progress=0.45,                                                # building momentum — ~45%
 )
 → {node_id: "n4", instruction: "TURN_OVER. ..."}
 # END TURN. ★ branches (PCI DSS, EU VAT) pre-checked. User can submit

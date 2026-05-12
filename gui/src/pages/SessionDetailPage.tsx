@@ -4,6 +4,7 @@ import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
 import { FireAnimation } from "../components/FireAnimation";
+import { ProgressBar } from "../components/ProgressBar";
 import { ScoreChip } from "../components/ScoreChip";
 import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
@@ -156,6 +157,7 @@ function DetailShell() {
         </div>
         <BriefBanner brief={state.brief} />
       </header>
+      <ProgressBar />
       <main className="gc-detail-body">
         {!state.loaded ? (
           <div className="gc-empty">loading…</div>

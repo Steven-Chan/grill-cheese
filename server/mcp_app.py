@@ -94,6 +94,7 @@ async def present_branches(
     depth: int = 0,
     implicit: bool = False,
     multi_select: bool = False,
+    progress: Optional[float] = None,
 ) -> dict:
     """Push a decision node to the GUI. Returns immediately with {node_id, instruction}.
 
@@ -104,6 +105,11 @@ async def present_branches(
     Mark every branch you'd recommend (zero or more) — GUI auto-checks all
     ★ branches on render. Use multi_select for questions that genuinely
     admit multiple simultaneous picks ("which of these concerns matter?").
+
+    `progress` (optional): best-guess fraction in [0,1] of how complete the
+    session is AFTER this push lands. Re-estimate every push; downward is
+    fine when the user redirects deeper (ADR-0007 honest-shrink). Absent
+    hides the GUI progress bar entirely.
 
     After this call, your turn MUST end. The `instruction` field in the result
     spells it out — channels (notifications/claude/channel) will wake you with
@@ -120,6 +126,7 @@ async def present_branches(
         depth=depth,
         implicit=implicit,
         multi_select=multi_select,
+        progress=progress,
     )
     await store.broadcast(
         session_id,
@@ -198,6 +205,9 @@ async def present_summary(
     For stop_here / create_plan / implement_now: do NOT call end_session.
     Server has already ended the session.
     """
+    # Progress bar (ADR-0007): summary always pins to 100%. Claude doesn't
+    # emit a progress arg here — server force-sets it for symmetry with the
+    # bar's "summary = done" semantic.
     node = store.add_node(
         sid=session_id,
         question="",
@@ -210,6 +220,7 @@ async def present_summary(
         summary_body=summary,
         generate_docs=generate_docs,
         docs_reason=docs_reason or None,
+        progress=1.0,
     )
     # swap wrap sentinel for real summary node id so the gate in apply_action
     # can route picks correctly. no-op if this wasn't a wrap-initiated summary.
