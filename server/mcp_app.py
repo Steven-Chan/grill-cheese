@@ -485,3 +485,66 @@ async def get_session_snapshot(session_id: str) -> dict:
     if not s:
         return {"error": "no such session"}
     return s.model_dump()
+
+
+@mcp.tool()
+async def start_retro_session(project: str, repo_root: str) -> dict:
+    """Start a kind="retro" grill session for a project (ADR-0005).
+
+    Scans ended sessions for `project` since the retro marker timestamp at
+    `~/.grill-cheese/project-<slug>/.last-retro`, collects disagreed
+    decision nodes (recommendation_score < 1) plus their chat transcripts
+    and own_answer text, and reads current doc state (CLAUDE.md / ADRs /
+    CONTEXT.md / skill files / global ~/.claude/CLAUDE.md). All of that
+    is composed into a markdown brief for the retro grill.
+
+    Returns:
+        {session_id, started_at, is_empty, session_count, disagreed_count}.
+        When is_empty=true the skill should call end_session immediately
+        and tell the user no retro is needed.
+
+    Args:
+        project: project slug (same as start_session.project).
+        repo_root: absolute path to the project repo (skill should pass
+                   `git rev-parse --show-toplevel`). Used to read in-repo
+                   CLAUDE.md / docs/adr/* / CONTEXT.md / skill/*/SKILL.md.
+    """
+    from pathlib import Path
+    from . import retro as retro_mod
+
+    if not project or not project.strip():
+        return {"error": "project must be a non-empty string"}
+    project = project.strip()
+    if not repo_root or not repo_root.strip():
+        return {"error": "repo_root must be a non-empty string"}
+    root = Path(repo_root.strip()).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        return {"error": f"repo_root does not exist or is not a directory: {root}"}
+
+    brief_obj, brief_md = retro_mod.compose_brief(project, root)
+    title = f"Retro {time.strftime('%Y-%m-%d')}"
+    if len(title) > TITLE_MAX:
+        title = title[:TITLE_MAX]
+    s = store.new_session(title, brief_md, project, kind="retro")
+    await store.broadcast(
+        s.id,
+        {
+            "type": "session_started",
+            "session_id": s.id,
+            "payload": {
+                "title": title,
+                "brief": brief_md,
+                "started_at": s.started_at,
+                "kind": "retro",
+            },
+        },
+    )
+    await store.broadcast_session_list()
+    return {
+        "session_id": s.id,
+        "started_at": s.started_at,
+        "is_empty": brief_obj.is_empty,
+        "session_count": brief_obj.session_count,
+        "disagreed_count": len(brief_obj.disagreed),
+        "since": brief_obj.since,
+    }

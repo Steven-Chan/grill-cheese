@@ -19,6 +19,7 @@ from .hooks import (
     hooks_endpoint,
     jump_to_cmux_endpoint,
     performance_endpoint,
+    retro_endpoint,
     sessions_endpoint,
     snapshot_endpoint,
     wrap_endpoint,
@@ -114,6 +115,7 @@ routes = [
     Route("/api/sessions/{sid}/jump-to-cmux", jump_to_cmux_endpoint, methods=["POST"]),
     Route("/api/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
     Route("/api/performance", performance_endpoint, methods=["GET"]),
+    Route("/api/retro", retro_endpoint, methods=["POST"]),
     # /export/<sid>.md is a user-facing direct link (opened in a new tab),
     # so it stays at the top level rather than under /api/.
     Route("/export/{sid}.md", export_md_endpoint, methods=["GET"]),

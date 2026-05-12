@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import time
+from pathlib import Path
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -481,6 +482,77 @@ async def jump_to_cmux_endpoint(request: Request) -> Response:
         if rc2 != 0:
             logger.info("cmux focus-panel rc=%s err=%s", rc2, err2[:200])
     return JSONResponse({"ok": True})
+
+
+async def retro_endpoint(request: Request) -> Response:
+    """POST /api/retro {project, repo_root} — GUI Retro button trigger.
+
+    Checks the retro marker window for disagreement data. If empty, returns
+    {empty: true} so the GUI shows an inline toast without launching a new
+    CC session. Otherwise resolves a cmux binary, shell-execs a fresh panel
+    running `claude /retro <project>`. See ADR-0006.
+
+    The actual `start_retro_session` MCP tool is called by the skill once
+    the new CC panel boots — this endpoint just gets the user there.
+    """
+    from . import retro as retro_mod
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "err": "bad json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "err": "body must be object"}, status_code=400)
+    project = (body.get("project") or "").strip()
+    repo_root = (body.get("repo_root") or "").strip()
+    if not project:
+        return JSONResponse({"ok": False, "err": "project required"}, status_code=400)
+    # repo_root falls back to server's repo root (the parent of server/)
+    if not repo_root:
+        repo_root = str(Path(__file__).resolve().parent.parent)
+
+    # peek: skip cmux spawn when the window is empty so users don't get a
+    # CC panel for a no-op retro. The skill would do the same check inside
+    # start_retro_session, but doing it here saves a panel launch.
+    since = retro_mod.read_marker(project)
+    disagreed, session_count = retro_mod.collect_disagreement_data(project, since)
+    if session_count == 0 or len(disagreed) == 0:
+        return JSONResponse({
+            "ok": True,
+            "empty": True,
+            "session_count": session_count,
+            "disagreed_count": len(disagreed),
+        })
+
+    bin_path = retro_mod.resolve_cmux_bin(project)
+    if not bin_path:
+        return JSONResponse({
+            "ok": False,
+            "empty": False,
+            "err": "cmux binary not found",
+            "fallback": "Run `/retro` in any Claude Code terminal",
+        }, status_code=503)
+
+    # cmux invocation — spawn a new panel running `claude` with the retro
+    # slash command prefilled. Exact cmux subcommand surface is captured here
+    # so the one-place rule from ADR-0006 holds.
+    prompt = f"/retro {project}"
+    args = ["new-panel", "--cmd", "claude", "--", prompt]
+    rc, err = await _run_cmux(bin_path, args, None)
+    if rc != 0:
+        logger.warning("retro: cmux new-panel rc=%s err=%s", rc, err[:200])
+        return JSONResponse({
+            "ok": False,
+            "empty": False,
+            "err": f"cmux new-panel rc={rc}: {err[:200]}",
+            "fallback": "Run `/retro` in any Claude Code terminal",
+        }, status_code=502)
+    return JSONResponse({
+        "ok": True,
+        "empty": False,
+        "session_count": session_count,
+        "disagreed_count": len(disagreed),
+    })
 
 
 async def export_md_endpoint(request: Request) -> Response:
