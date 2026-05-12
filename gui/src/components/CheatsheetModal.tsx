@@ -44,8 +44,9 @@ const SECTIONS: Section[] = [
   {
     title: "Global",
     rows: [
+      { keys: "Cmd/Ctrl + P", effect: "Open command palette (jump to session or page)" },
       { keys: "?", effect: "Open this cheatsheet" },
-      { keys: "Esc", effect: "Close cheatsheet / sidebar / decision-map overlay" },
+      { keys: "Esc", effect: "Close cheatsheet / palette / sidebar / decision-map overlay" },
     ],
   },
 ];
