@@ -16,6 +16,7 @@ type Item = PageItem | SessionItem;
 const PAGE_ITEMS: PageItem[] = [
   { kind: "page", id: "page:sessions", label: "Session list", to: "/sessions" },
   { kind: "page", id: "page:performance", label: "Performance", to: "/performance" },
+  { kind: "page", id: "page:setup", label: "Open setup", to: "/setup" },
 ];
 
 // Subsequence fuzzy with contiguous-run bonus. Returns null on miss, else
