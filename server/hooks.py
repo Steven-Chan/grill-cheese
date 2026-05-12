@@ -179,6 +179,9 @@ async def actions_endpoint(request: Request) -> Response:
     if final_action in SUMMARY_END_ACTIONS:
         s2 = store.get(action.session_id)
         if s2:
+            # Perf log entry — emitted ONCE per session, before the doomed-node
+            # pruning below so node scores are still in s2.nodes. See ADR-0003.
+            store.emit_performance_entry(action.session_id, verdict=final_action)
             # Verdict-with-pending: discard any non-summary node that never
             # got an answer (un-flushed, non-implicit, non-redirected). Clean
             # tree, no audit trail of the abandoned question.
@@ -349,23 +352,41 @@ async def _handle_chat_action(action: GuiAction) -> Response:
 
 
 async def sessions_endpoint(request: Request) -> Response:
-    """GET list of active sessions."""
-    return JSONResponse(
-        {
-            "sessions": [
-                {
-                    "id": s.id,
-                    "title": s.title,
-                    "brief": s.brief,
-                    "project": s.project,
-                    "started_at": s.started_at,
-                    "status": s.status,
-                    "has_pending": store._has_pending(s.id),
-                }
-                for s in store.sessions.values()
-            ]
-        }
-    )
+    """GET list of active sessions. Each row is enriched with the per-session
+    pick rate by re-reading performance.jsonl on every request (no cache;
+    see ADR-0003). Pre-feature sessions return null `score`."""
+    from . import performance
+
+    perf_idx = performance.index_by_session()
+    rows = []
+    for s in store.sessions.values():
+        entry = perf_idx.get(s.id)
+        rows.append(
+            {
+                "id": s.id,
+                "title": s.title,
+                "brief": s.brief,
+                "project": s.project,
+                "started_at": s.started_at,
+                "status": s.status,
+                "has_pending": store._has_pending(s.id),
+                "score": entry.score if entry else None,
+                "decision_count": entry.decision_count if entry else None,
+                "verdict": entry.verdict if entry else None,
+            }
+        )
+    return JSONResponse({"sessions": rows})
+
+
+async def performance_endpoint(request: Request) -> Response:
+    """GET /api/performance → flat list of perf entries newest-first.
+
+    Re-reads performance.jsonl on every request. GUI groups by date
+    client-side. See ADR-0003."""
+    from . import performance
+
+    entries = performance.read_all()
+    return JSONResponse([e.model_dump() for e in entries])
 
 
 async def delete_session_endpoint(request: Request) -> Response:

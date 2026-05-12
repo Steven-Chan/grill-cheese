@@ -43,6 +43,13 @@ Source of truth for terminology. Read this before edits that touch the decision-
   - **Map edge** — every entry in a parent node's `branches`. Edge label = branch label; classification follows the four-state matrix below.
   - **Map encoding** — chosen branch edge: solid full-colour. Abandoned: 30% opacity gray. Chat-added (in `pending_proposals.ops.adds` history): dashed green. Chat-removed (id in `removed_branch_ids`): strikethrough red. Redirected node (`redirected === true`): dashed red border on the node itself.
 
+## Performance tracking
+
+- **Recommendation score** — per-decision metric in `[0, 1]` or `null`. Single-mode: `1` if user picked the ★ branch, else `0` (Own Answer / chat redirect / any non-recommended pick → `0`). Multi-mode: `picked_recs / total_recs` (extras don't penalize). `null` when there's no signal: summary nodes, implicit decisions, multi-mode with zero recommended branches. Stored as `DecisionNode.recommendation_score`. Computed once at `next` commit in `apply_action` (`_flush`); never recomputed.
+- **Session pick rate** — arithmetic mean of decision scores, skipping nulls. Computed at session end. **NOT** stored on `Session` — see ADR-0003 (sessions get pruned; per-session score must outlive them).
+- **Performance log** — append-only JSONL at `~/.grill-cheese/performance.jsonl`. One line per ended session: `{session_id, project, title, ended_at, score, decision_count, verdict}`. Survives session JSON pruning. Read by `/api/performance` (flat list newest-first) and `/api/sessions` (joined to enrich list rows with `score` + `decision_count` + `verdict`). Re-read on every request — no in-memory cache.
+- **Performance page** — new GUI route `/performance`. Today's ended sessions on top with per-session score; collapsed dated history (last 7 / 30 days) below.
+
 ## Ambiguities flagged
 
 - The legacy GUI wire field `note` was overloaded — historically used as both "user's own answer" and "annotation on a branch pick". v1 of the redesign collapses this onto the new `own_answer` field. Old session JSONs may still carry `note`; the rehydrate path silently ignores unknown fields (`model_config = {"extra": "ignore"}`).

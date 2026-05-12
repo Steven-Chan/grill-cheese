@@ -24,6 +24,7 @@ from .schemas import (
     HookEvent,
     Node,
     PendingProposal,
+    PerformanceEntry,
     Session,
 )
 
@@ -325,6 +326,12 @@ class Store:
         node.pending_actions = []
         node.committed_actions = pending
         node.is_flushed = True
+        # pick-rate score is pinned at commit on a `next` flush. Summary
+        # verdicts (stop_here / create_plan / implement_now / continue_grill)
+        # don't carry a recommendation, so they leave the field None.
+        last_action = pending[-1].action if pending else None
+        if node.kind != "summary" and last_action == "next":
+            node.recommendation_score = _compute_recommendation_score(node)
         # assign monotonic per-session seq for channel skip-detection
         seq = s.next_seq
         s.next_seq += 1
@@ -412,6 +419,44 @@ class Store:
             return
         s.wrap_summary_node_id = node_id
         self._persist(s)
+
+    # ---- perf log emit ----
+    def emit_performance_entry(self, sid: str, verdict: str) -> None:
+        """Append one perf log line for a just-ended session. Idempotent —
+        guards on `s.status == "ended"` so re-calls (or both callers firing
+        for the same session) only land one row in performance.jsonl.
+        Callers MUST set `s.status = "ended"` AFTER this returns (the guard
+        is what dedups). Errors swallowed inside performance.append so a
+        perf failure never blocks the session-end path.
+        """
+        from . import performance  # local import: avoid top-level cycle risk
+
+        s = self.sessions.get(sid)
+        if s is None:
+            return
+        if s.status == "ended":
+            # Already emitted on a prior end-of-session path (hooks summary
+            # verdict ran before, or end_session was called twice). Dedup.
+            return
+        if verdict not in ("stop_here", "create_plan", "implement_now", "end_session"):
+            logger.warning("perf emit: skipping unknown verdict %r", verdict)
+            return
+        scores = [
+            n.recommendation_score
+            for n in s.nodes.values()
+            if n.recommendation_score is not None
+        ]
+        mean = sum(scores) / len(scores) if scores else None
+        entry = PerformanceEntry(
+            session_id=s.id,
+            project=s.project,
+            title=s.title,
+            ended_at=time.time(),
+            score=mean,
+            decision_count=len(scores),
+            verdict=verdict,  # type: ignore[arg-type]
+        )
+        performance.append(entry)
 
     # ---- delete ----
     async def delete_session(self, sid: str) -> bool:
@@ -983,23 +1028,32 @@ class Store:
         return False
 
     def _session_list_snapshot(self) -> dict[str, Any]:
+        # Enrich rows with perf log data (re-read each snapshot; matches
+        # /api/sessions semantics — no in-memory cache. See ADR-0003).
+        from . import performance
+
+        perf_idx = performance.index_by_session()
+        rows = []
+        for s in self.sessions.values():
+            entry = perf_idx.get(s.id)
+            rows.append(
+                {
+                    "id": s.id,
+                    "title": s.title,
+                    "brief": s.brief,
+                    "project": s.project,
+                    "started_at": s.started_at,
+                    "status": s.status,
+                    "has_pending": self._has_pending(s.id),
+                    "score": entry.score if entry else None,
+                    "decision_count": entry.decision_count if entry else None,
+                    "verdict": entry.verdict if entry else None,
+                }
+            )
         return {
             "type": "session_list",
             "session_id": "",
-            "payload": {
-                "sessions": [
-                    {
-                        "id": s.id,
-                        "title": s.title,
-                        "brief": s.brief,
-                        "project": s.project,
-                        "started_at": s.started_at,
-                        "status": s.status,
-                        "has_pending": self._has_pending(s.id),
-                    }
-                    for s in self.sessions.values()
-                ]
-            },
+            "payload": {"sessions": rows},
         }
 
     async def broadcast_session_list(self) -> None:
@@ -1084,6 +1138,38 @@ class Store:
                 q.put_nowait(ev)
             except asyncio.QueueFull:
                 pass
+
+
+def _compute_recommendation_score(node: Node) -> Optional[float]:
+    """Pick-rate score for one decision node. Returns None when there's no
+    signal: summary nodes, implicit decisions, multi-mode with zero
+    recommended branches. See CONTEXT.md "Recommendation score"."""
+    if node.kind == "summary" or node.implicit:
+        return None
+    by_id = {b.id: b for b in node.branches}
+    removed = set(node.removed_branch_ids)
+    recs = [b for b in node.branches if b.is_recommended and b.id not in removed]
+    chosen_ids = list(node.chosen_branch_ids)
+    # chat redirect without an explicit pick → user spec says 0.
+    if node.redirected and not chosen_ids:
+        return 0.0
+    if not chosen_ids:
+        # node hasn't been committed yet — defensive; _flush should be the
+        # only caller, and it sets chosen_branch_ids in apply_action first.
+        return None
+    if node.multi_select:
+        if not recs:
+            return None
+        chosen_set = set(chosen_ids)
+        picked_recs = sum(1 for r in recs if r.id in chosen_set)
+        return picked_recs / len(recs)
+    # single-mode: 1 if any chosen id is a recommendation, else 0.
+    # Synth user_authored branches are never is_recommended → 0 naturally.
+    for cid in chosen_ids:
+        b = by_id.get(cid)
+        if b is not None and b.is_recommended:
+            return 1.0
+    return 0.0
 
 
 def _chosen_branches(n: Node) -> list[Branch]:

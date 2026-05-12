@@ -1,4 +1,4 @@
-import type { SessionMeta } from "./types";
+import type { PerformanceEntry, SessionMeta } from "./types";
 
 // `chat` action removed — composer is always-visible (ADR-0001). chat starts
 // implicitly when the first chat_user_msg lands.
@@ -92,6 +92,12 @@ export function logShortcutPrefill(
 
 export async function listSessions(): Promise<{ sessions: SessionMeta[] }> {
   const r = await fetch("/api/sessions");
+  return r.json();
+}
+
+export async function fetchPerformance(): Promise<PerformanceEntry[]> {
+  const r = await fetch("/api/performance");
+  if (!r.ok) throw new Error(`performance fetch failed: ${r.status}`);
   return r.json();
 }
 

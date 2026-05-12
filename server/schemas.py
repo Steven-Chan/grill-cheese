@@ -101,6 +101,12 @@ class Node(BaseModel):
     chosen_branch_ids: list[str] = Field(default_factory=list)
     # chat-removed branches; soft delete, branch entries stay in branches[]
     removed_branch_ids: list[str] = Field(default_factory=list)
+    # pick-rate score in [0, 1] or None. Single-mode: 1 if user picked the ★
+    # branch, else 0 (Own Answer / chat redirect → 0). Multi-mode:
+    # picked_recs / total_recs. None for summary, implicit, and multi-mode
+    # with zero recommendations. Computed once at `next` commit in _flush;
+    # never recomputed. See CONTEXT.md + ADR-0003.
+    recommendation_score: Optional[float] = None
     # accumulating chat history applied to this node
     chats: list[ChatBlock] = Field(default_factory=list)
     # set when chat outcome == "redirect" — node abandoned, child carries new question
@@ -277,6 +283,29 @@ class AskBranchesResult(BaseModel):
     # full chosen-path markdown — set only on create_plan / implement_now
     # so model can drive plan-write or coding directly off this string
     chain_markdown: Optional[str] = None
+
+
+# ---- performance log (separate-entity, append-only) ----
+# One entry per ended session at ~/.grill-cheese/performance.jsonl. The log
+# is decoupled from session JSONs because sessions get pruned; perf history
+# must outlive them. See ADR-0003.
+
+PerfVerdict = Literal["stop_here", "create_plan", "implement_now", "end_session"]
+
+
+class PerformanceEntry(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    session_id: str
+    project: str
+    title: Optional[str] = None
+    ended_at: float
+    # session-level mean of decision scores, nulls skipped. None when the
+    # session had zero scored decisions (only summary / implicit / 0-rec multi).
+    score: Optional[float] = None
+    # number of decisions that contributed to score (excludes nulls).
+    decision_count: int = 0
+    verdict: PerfVerdict
 
 
 # ---- claude code hook payload (subset we care about) ----

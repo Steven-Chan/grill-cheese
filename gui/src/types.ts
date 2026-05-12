@@ -96,6 +96,10 @@ export interface DecisionNode {
   pending_actions?: unknown[];
   committed_actions?: unknown[];
   is_flushed?: boolean;
+  // pick-rate score in [0, 1] or null. Set on the next-commit flush.
+  // null for summary, implicit, and multi-mode with zero recommendations.
+  // See CONTEXT.md "Recommendation score" + ADR-0003.
+  recommendation_score?: number | null;
 }
 
 export interface HookTrace {
@@ -127,6 +131,28 @@ export interface SessionMeta {
   started_at: number;
   status: SessionStatus;
   has_pending: boolean;
+  // Per-session pick rate enriched from performance.jsonl (ADR-0003).
+  // score/decision_count/verdict are null when no perf entry exists for
+  // this session (pre-feature, still active, or never ended). When the
+  // entry exists, decision_count is always an integer (0 if no scored
+  // decisions); score may still be null (no scored decisions case).
+  score?: number | null;
+  decision_count?: number | null;
+  verdict?: string | null;
+}
+
+// One performance.jsonl entry. Returned flat from /api/performance, newest
+// first; GUI groups by date. See ADR-0003.
+export type PerfVerdict = "stop_here" | "create_plan" | "implement_now" | "end_session";
+
+export interface PerformanceEntry {
+  session_id: string;
+  project: string;
+  title: string | null;
+  ended_at: number;
+  score: number | null;
+  decision_count: number;
+  verdict: PerfVerdict;
 }
 
 export type SseEvent =

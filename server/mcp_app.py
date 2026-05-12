@@ -442,6 +442,11 @@ async def end_session(session_id: str, summary: str = "") -> dict:
     """End the grill session. Final summary is broadcast to GUI."""
     s = store.get(session_id)
     if s:
+        # Perf log entry — only on the active→ended transition (no double
+        # emit on idempotent re-call). verdict="end_session" marks this as
+        # the explicit-bailout path (vs the verdict-driven auto-end in hooks).
+        if s.status != "ended":
+            store.emit_performance_entry(session_id, verdict="end_session")
         s.status = "ended"
     await store.broadcast(
         session_id,

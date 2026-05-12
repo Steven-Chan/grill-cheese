@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { deleteSession, listSessions } from "../api";
 import { FireAnimation } from "../components/FireAnimation";
+import { ScoreChip } from "../components/ScoreChip";
 import { openSse } from "../sse";
 import { initialListState, listReducer } from "../state";
 import type { SessionMeta, SseEvent } from "../types";
@@ -74,6 +75,8 @@ export function SessionListPage() {
         </h1>
         <p className="gc-dim">
           Server: <code>127.0.0.1:7878</code>
+          {" · "}
+          <Link to="/performance" className="gc-nav-link">performance</Link>
         </p>
       </header>
       {!state.loaded ? (
@@ -144,6 +147,7 @@ function SessionRow({
         <span className="gc-session-chips">
           {meta.project && <span className="gc-chip gc-chip-project">{meta.project}</span>}
           <span className={`gc-chip gc-status-${meta.status}`}>{meta.status}</span>
+          {meta.status === "ended" && <ScoreChip score={meta.score} count={meta.decision_count} />}
         </span>
         <span className="gc-session-meta">
           {meta.id.slice(0, 6)} · {relTime(meta.started_at)}

@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
 import { FireAnimation } from "../components/FireAnimation";
+import { ScoreChip } from "../components/ScoreChip";
 import { SidebarHistory } from "../components/SidebarHistory";
 import { EndedHistoryView } from "./EndedHistoryView";
 import { exportMarkdownUrl, postJumpToCmux, postWrap, type ActionRejection } from "../api";
@@ -50,6 +51,18 @@ function DetailShell() {
     state.loaded && state.status !== "ended" && state.nodeOrder.length > 0 && !state.wrapping;
   const canJumpToCmux = !!state.cmux?.workspace_id;
   const [jumping, setJumping] = useState(false);
+
+  // Client-side pick-rate badge — mean of node.recommendation_score over the
+  // nodes that have one (matches server's emit_performance_entry formula).
+  // Cheap to compute on every render; runs over the in-memory node map only.
+  const pickRate = useMemo(() => {
+    const scores: number[] = [];
+    for (const n of Object.values(state.nodes)) {
+      if (typeof n.recommendation_score === "number") scores.push(n.recommendation_score);
+    }
+    if (scores.length === 0) return { score: null as number | null, count: 0 };
+    return { score: scores.reduce((a, b) => a + b, 0) / scores.length, count: scores.length };
+  }, [state.nodes]);
 
   const onJumpToCmux = async () => {
     if (jumping) return;
@@ -129,6 +142,9 @@ function DetailShell() {
         <div className="gc-detail-head-chips">
           {state.project && <span className="gc-chip gc-chip-project">{state.project}</span>}
           <span className={`gc-chip gc-status-${state.status}`}>{state.status}</span>
+          {state.status === "ended" && pickRate.count > 0 && (
+            <ScoreChip score={pickRate.score} count={pickRate.count} />
+          )}
         </div>
         <BriefBanner brief={state.brief} />
       </header>
