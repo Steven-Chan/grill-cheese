@@ -60,6 +60,19 @@ Source of truth for terminology. Read this before edits that touch the decision-
 - **Performance log** — append-only JSONL at `~/.grill-cheese/performance.jsonl`. One line per ended session: `{session_id, project, title, ended_at, score, decision_count, verdict}`. Survives session JSON pruning. Read by `/api/performance` (flat list newest-first) and `/api/sessions` (joined to enrich list rows with `score` + `decision_count` + `verdict`). Re-read on every request — no in-memory cache.
 - **Performance page** — new GUI route `/performance`. Today's ended sessions on top with per-session score; collapsed dated history (last 7 / 30 days) below.
 
+## Session list surface
+
+- **Needs-you bar** — sticky strip at the top of `/`. Surfaces every session with `has_pending == true` (covers both pending question AND awaiting verdict; same visual treatment, no `attention_kind` field). Sessions in this bar are pulled out of the Active section — they do NOT render twice.
+- **All-clear stub** — slim persistent row inside the Needs-you bar when nothing is pending. Text: "All clear — nothing waiting on you." Keeps layout stable across flushes (no vertical jump when the last pending row clears).
+- **Active section** — open sessions not waiting on you. Header + count. No sub-distinction between "running" and "idle-active" — channels-mode has no live-generation signal, and time-based freshness was rejected as noisy.
+- **Ended section** — terminal sessions. Default view shows the 5 most recent; a one-way **"show all (N)"** button expands to the full list (no collapse — page reload to reset). No date sub-grouping (deferred — `/performance` already provides that view).
+- **Row chrome rules** —
+  - Pending `●` dot: gone (Needs-you bar replaces the signal).
+  - Status chip: gone (section header carries the lifecycle).
+  - `ScoreChip`: rendered only inside Ended rows.
+  - Kept: title, brief preview, project chip, id-slice + relative time, delete X.
+- **Project axis** — global flat list across projects. No filter, no grouping, no rail. Project chip on each row.
+
 ## Ambiguities flagged
 
 - The legacy GUI wire field `note` was overloaded — historically used as both "user's own answer" and "annotation on a branch pick". v1 of the redesign collapses this onto the new `own_answer` field. Old session JSONs may still carry `note`; the rehydrate path silently ignores unknown fields (`model_config = {"extra": "ignore"}`).

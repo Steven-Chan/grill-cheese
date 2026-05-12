@@ -80,7 +80,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-session-row {
   flex: 1;
   display: grid;
-  grid-template-columns: 18px 1fr auto auto;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
@@ -92,7 +92,6 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   cursor: pointer;
 }
 
-.gc-session-star { color: var(--gc-accent); width: 18px; }
 .gc-session-text { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
 .gc-session-title { font-weight: 500; color: var(--gc-fg); }
 .gc-session-brief-secondary {
@@ -117,6 +116,68 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   border-radius: 0 6px 6px 0;
 }
 .gc-session-delete:hover { color: var(--gc-warn); background: rgba(232, 142, 93, 0.08); }
+
+/* ---------- list body: needs-you bar + sections ---------- */
+
+.gc-list-body { display: flex; flex-direction: column; gap: 24px; }
+
+.gc-needs-you-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--gc-bg);
+  padding: 12px 0 14px 0;
+  border-bottom: 1px solid var(--gc-edge);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* solid bg + soft shadow so content scrolls cleanly underneath */
+  box-shadow: 0 4px 8px -6px rgba(0, 0, 0, 0.5);
+}
+.gc-needs-you-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gc-rec);
+  font-weight: 500;
+}
+.gc-needs-you-empty {
+  padding: 10px 14px;
+  color: var(--gc-fg-faint);
+  font-style: italic;
+  border: 1px dashed var(--gc-edge);
+  border-radius: 6px;
+  background: var(--gc-bg-elev);
+}
+
+.gc-row-needsYou { border-color: rgba(212, 165, 84, 0.45); }
+.gc-row-needsYou:hover { border-color: var(--gc-rec); }
+.gc-row-ended { opacity: 0.82; }
+.gc-row-ended:hover { opacity: 1; }
+
+.gc-list-section { display: flex; flex-direction: column; gap: 8px; }
+.gc-list-section-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gc-fg-dim);
+  font-weight: 500;
+}
+.gc-count { color: var(--gc-fg-faint); font-weight: 400; }
+
+.gc-ended-toggle-wrap { list-style: none; display: flex; justify-content: center; margin-top: 4px; }
+.gc-ended-toggle {
+  background: transparent;
+  border: 1px solid var(--gc-edge);
+  color: var(--gc-fg-dim);
+  padding: 4px 14px;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.gc-ended-toggle:hover { border-color: var(--gc-accent); color: var(--gc-fg); }
 
 /* ---------- chips ---------- */
 

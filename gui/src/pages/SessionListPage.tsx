@@ -2,16 +2,21 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { deleteSession, listSessions } from "../api";
 import { FireAnimation } from "../components/FireAnimation";
-import { ScoreChip } from "../components/ScoreChip";
+import { ListSection } from "../components/ListSection";
+import { NeedsYouBar } from "../components/NeedsYouBar";
+import { SessionRow, displayTitle } from "../components/SessionRow";
 import { openSse } from "../sse";
 import { initialListState, listReducer } from "../state";
 import type { SessionMeta, SseEvent } from "../types";
+
+const ENDED_PREVIEW_COUNT = 5;
 
 export function SessionListPage() {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(listReducer, initialListState);
   const [toast, setToast] = useState<string | null>(null);
   const [brandMode, setBrandMode] = useState<"fire" | "cheese">("fire");
+  const [showAllEnded, setShowAllEnded] = useState(false);
   const dispatchRef = useRef(dispatch);
   dispatchRef.current = dispatch;
 
@@ -43,14 +48,24 @@ export function SessionListPage() {
     });
   }, []);
 
-  const sorted = useMemo(() => {
-    const xs = [...state.sessions];
-    xs.sort((a, b) => {
-      if (a.has_pending !== b.has_pending) return a.has_pending ? -1 : 1;
-      return b.started_at - a.started_at;
-    });
-    return xs;
+  const { needsYou, active, ended } = useMemo(() => {
+    const needsYou: SessionMeta[] = [];
+    const active: SessionMeta[] = [];
+    const ended: SessionMeta[] = [];
+    for (const s of state.sessions) {
+      if (s.has_pending) needsYou.push(s);
+      else if (s.status === "ended") ended.push(s);
+      else active.push(s);
+    }
+    const byTime = (a: SessionMeta, b: SessionMeta) => b.started_at - a.started_at;
+    needsYou.sort(byTime);
+    active.sort(byTime);
+    ended.sort(byTime);
+    return { needsYou, active, ended };
   }, [state.sessions]);
+
+  const visibleEnded = showAllEnded ? ended : ended.slice(0, ENDED_PREVIEW_COUNT);
+  const totalRows = needsYou.length + active.length + ended.length;
 
   const onDelete = async (meta: SessionMeta) => {
     if (meta.status !== "ended") {
@@ -65,6 +80,8 @@ export function SessionListPage() {
       setToast("delete failed");
     }
   };
+
+  const pick = (s: SessionMeta) => navigate(`/sessions/${s.id}`);
 
   return (
     <div className="gc-page gc-list-page">
@@ -81,7 +98,7 @@ export function SessionListPage() {
       </header>
       {!state.loaded ? (
         <div className="gc-empty">loading…</div>
-      ) : sorted.length === 0 ? (
+      ) : totalRows === 0 ? (
         <div className="gc-empty">
           <p>no sessions yet</p>
           <p className="gc-dim">
@@ -89,16 +106,44 @@ export function SessionListPage() {
           </p>
         </div>
       ) : (
-        <ul className="gc-session-list">
-          {sorted.map((s) => (
-            <SessionRow
-              key={s.id}
-              meta={s}
-              onPick={() => navigate(`/sessions/${s.id}`)}
-              onDelete={() => onDelete(s)}
-            />
-          ))}
-        </ul>
+        <div className="gc-list-body">
+          <NeedsYouBar rows={needsYou} onPick={pick} onDelete={onDelete} />
+
+          <ListSection title="Active" count={active.length}>
+            {active.map((s) => (
+              <SessionRow
+                key={s.id}
+                meta={s}
+                variant="active"
+                onPick={() => pick(s)}
+                onDelete={() => onDelete(s)}
+              />
+            ))}
+          </ListSection>
+
+          <ListSection title="Ended" count={ended.length}>
+            {visibleEnded.map((s) => (
+              <SessionRow
+                key={s.id}
+                meta={s}
+                variant="ended"
+                onPick={() => pick(s)}
+                onDelete={() => onDelete(s)}
+              />
+            ))}
+            {!showAllEnded && ended.length > ENDED_PREVIEW_COUNT && (
+              <li className="gc-ended-toggle-wrap">
+                <button
+                  type="button"
+                  className="gc-ended-toggle"
+                  onClick={() => setShowAllEnded(true)}
+                >
+                  show all ({ended.length})
+                </button>
+              </li>
+            )}
+          </ListSection>
+        </div>
       )}
       {toast && (
         <div className="gc-toast" role="status">
@@ -109,62 +154,5 @@ export function SessionListPage() {
         </div>
       )}
     </div>
-  );
-}
-
-function displayTitle(meta: SessionMeta): string {
-  return meta.title || (meta.brief ? meta.brief.slice(0, 80) : "(untitled)");
-}
-
-function relTime(ts: number): string {
-  const sec = Math.max(0, Date.now() / 1000 - ts);
-  if (sec < 60) return `${Math.floor(sec)}s ago`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-  return `${Math.floor(sec / 86400)}d ago`;
-}
-
-function SessionRow({
-  meta,
-  onPick,
-  onDelete,
-}: {
-  meta: SessionMeta;
-  onPick: () => void;
-  onDelete: () => void;
-}) {
-  const title = displayTitle(meta);
-  return (
-    <li className="gc-session-row-wrap">
-      <button type="button" className="gc-session-row" onClick={onPick}>
-        <span className="gc-session-star" aria-hidden>
-          {meta.has_pending ? "●" : ""}
-        </span>
-        <span className="gc-session-text">
-          <strong className="gc-session-title">{title}</strong>
-          {meta.brief && <span className="gc-session-brief-secondary">{meta.brief}</span>}
-        </span>
-        <span className="gc-session-chips">
-          {meta.project && <span className="gc-chip gc-chip-project">{meta.project}</span>}
-          <span className={`gc-chip gc-status-${meta.status}`}>{meta.status}</span>
-          {meta.status === "ended" && <ScoreChip score={meta.score} count={meta.decision_count} />}
-        </span>
-        <span className="gc-session-meta">
-          {meta.id.slice(0, 6)} · {relTime(meta.started_at)}
-        </span>
-      </button>
-      <button
-        type="button"
-        className="gc-session-delete"
-        aria-label="Delete session"
-        title="Delete session"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        ×
-      </button>
-    </li>
   );
 }
