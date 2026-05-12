@@ -503,6 +503,12 @@ function ComposerPanel({
   const [busy, setBusy] = useState<"send" | "accept" | "close" | null>(null);
   const [pickedProposalId, setPickedProposalId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  // Tiptap v3's useEditor does NOT re-render on every transaction. Reading
+  // `editor.isEmpty` directly during render is stale — the Send button
+  // would only flip to enabled after some unrelated React state change
+  // (typing in the Own Answer textarea, etc.) forced a re-render. Mirror
+  // emptiness into React state via onCreate/onUpdate.
+  const [editorEmpty, setEditorEmpty] = useState(true);
 
   const editor = useEditor({
     extensions: [StarterKit.configure({ heading: false }), BranchChipNode],
@@ -513,6 +519,8 @@ function ComposerPanel({
         "aria-label": "Chat composer (drag branches to insert chips)",
       },
     },
+    onCreate: ({ editor }) => setEditorEmpty(editor.isEmpty),
+    onUpdate: ({ editor }) => setEditorEmpty(editor.isEmpty),
   });
 
   // Lock the editor when the parent decision is settled — chat is non-blocking
@@ -706,7 +714,7 @@ function ComposerPanel({
         <button
           type="button"
           className="gc-btn gc-btn-primary gc-composer-send"
-          disabled={!!busy || !editor || isEditorEmpty(editor) || !!locked}
+          disabled={!!busy || !editor || editorEmpty || !!locked}
           onClick={() => void sendCurrent()}
         >
           {busy === "send" ? "sending…" : "Send"}
@@ -722,11 +730,6 @@ function serializeEditorText(editor: CoreEditor): string {
   return editor.getText({
     blockSeparator: "\n",
   });
-}
-
-function isEditorEmpty(editor: CoreEditor | null): boolean {
-  if (!editor) return true;
-  return editor.isEmpty;
 }
 
 function ProposalPicker({
