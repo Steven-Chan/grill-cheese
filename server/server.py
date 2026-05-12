@@ -8,7 +8,7 @@ from pathlib import Path
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse, Response
+from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -24,6 +24,7 @@ from .hooks import (
     snapshot_endpoint,
     wrap_endpoint,
 )
+from .setup_probes import setup_status
 from .internal_dispatch import (
     internal_notify_endpoint,
     internal_shortcut_endpoint,
@@ -116,6 +117,7 @@ routes = [
     Route("/api/snapshot/{sid}", snapshot_endpoint, methods=["GET"]),
     Route("/api/performance", performance_endpoint, methods=["GET"]),
     Route("/api/retro", retro_endpoint, methods=["POST"]),
+    Route("/api/setup-status", lambda _r: JSONResponse(setup_status()), methods=["GET"]),
     # /export/<sid>.md is a user-facing direct link (opened in a new tab),
     # so it stays at the top level rather than under /api/.
     Route("/export/{sid}.md", export_md_endpoint, methods=["GET"]),
