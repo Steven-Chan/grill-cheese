@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { CheatsheetModal } from "./components/CheatsheetModal";
+import { CommandPalette } from "./components/CommandPalette";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { useOverlay } from "./OverlayContext";
 import { PerformancePage } from "./pages/PerformancePage";
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/sessions" replace />} />
       </Routes>
       {active === "cheatsheet" && <CheatsheetModal onClose={() => setOverlay(null)} />}
+      <CommandPalette />
     </>
   );
 }
