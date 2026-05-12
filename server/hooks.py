@@ -202,6 +202,7 @@ async def actions_endpoint(request: Request) -> Response:
                         for b in parent.branches:
                             if b.id == n.parent_branch_id and b.child_node_id == nid:
                                 b.child_node_id = None
+                s2.nodes.pop(nid, None)
             # ADR-0005: a retro session's terminal verdict advances the marker
             # so the next /retro window starts here. continue_grill is excluded
             # (handled above — verdict didn't fire).
@@ -211,7 +212,6 @@ async def actions_endpoint(request: Request) -> Response:
                     retro_mod.write_marker(s2.project)
                 except Exception:
                     logger.exception("retro: failed to write marker for %s", s2.project)
-                s2.nodes.pop(nid, None)
             s2.status = "ended"
         await store.broadcast(
             action.session_id,
@@ -545,6 +545,12 @@ async def retro_endpoint(request: Request) -> Response:
     # cmux invocation — spawn a new panel running `claude` with the retro
     # slash command prefilled. Exact cmux subcommand surface is captured here
     # so the one-place rule from ADR-0006 holds.
+    # NOTE: the positional prompt arg after `--` is BEST-GUESS. If the
+    # installed cmux build accepts a different shape (e.g. `--prompt=`,
+    # `--initial-input`), or ignores the positional arg entirely, the user
+    # gets a blank CC panel with no error from the server (rc=0). Verify by
+    # running `cmux new-panel --help` on first integration. The fallback path
+    # is `/retro` typed directly in any CC terminal.
     prompt = f"/retro {project}"
     args = ["new-panel", "--cmd", "claude", "--", prompt]
     rc, err = await _run_cmux(bin_path, args, None)

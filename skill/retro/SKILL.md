@@ -7,7 +7,18 @@ description: Project retrospective. Read disagreement data + chat transcripts + 
 
 You are running a **retrospective** for the user's project. Read the disagreement signal accumulated in prior grill sessions, surface the patterns you see, and propose **concrete actions** the user can accept that will change how the agent works on this project in future.
 
-This skill is structurally a `kind="retro"` grill-cheese session. **Read the grill-cheese skill first** — every primitive (decision nodes, chat, summary verdicts, channel wakes, end-turn discipline) carries over verbatim. The only differences are spelled out below.
+This skill is structurally a `kind="retro"` grill-cheese session. The channel-wake protocol, end-turn discipline, and tool surface are reproduced inline below — you do not need to load the grill-cheese skill to run this one. If you happen to have both loaded, the grill-cheese SKILL.md is authoritative on the shared protocol.
+
+## Channel-wake protocol (inline)
+
+After every `present_branches` / `present_summary` call you **must end your turn**. The tool result carries `instruction = "TURN_OVER. ..."` — honor it. The grill-cheese channel wakes you with a `<channel source="grill-cheese" ...>` block in the next user message; parse the JSON inside.
+
+Payload shapes (same as grill-cheese):
+- **node-commit**: `{session_id, node_id, seq, actions: [{node_id, chosen_branch_ids, chosen_branch_labels, own_answer, action, chain_markdown?}]}`. Action is `next | stop_here | create_plan | implement_now | continue_grill`.
+- **session_wrap**: `{type: "session_wrap", session_id}` — user clicked toolbar Wrap-up. Respond with `present_summary` (NOT `end_session`).
+- **chat_message** / **chat_accepted**: inline chat wakes; handle per grill-cheese semantics if used during the retro.
+
+Track `last_seen_seq` mentally — increments by 1 per wake. If the next wake's `seq` is not exactly `last_seen_seq + 1` (server restart, shim restart, dropped event), call `get_session_snapshot(session_id)`, inspect `committed_actions` on flushed nodes you haven't seen, then act on what's missing.
 
 ## When to invoke
 
