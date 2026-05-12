@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { deleteSession } from "../api";
+import { deleteSession, fetchSetupStatus, type SetupStatus } from "../api";
 import { useAppContext } from "../AppContext";
 import { FireAnimation } from "../components/FireAnimation";
 import { ListSection } from "../components/ListSection";
@@ -17,6 +17,7 @@ export function SessionListPage() {
   const [brandMode, setBrandMode] = useState<"fire" | "cheese">("fire");
   const [showAllEnded, setShowAllEnded] = useState(false);
   const [clearingEnded, setClearingEnded] = useState(false);
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
 
   // brand flame cycles fire (7.5s) <-> cheese (3.5s) for charm
   useEffect(() => {
@@ -45,6 +46,26 @@ export function SessionListPage() {
 
   const visibleEnded = showAllEnded ? ended : ended.slice(0, ENDED_PREVIEW_COUNT);
   const totalRows = needsYou.length + active.length + ended.length;
+
+  // Probe setup only when the page is empty (don't bother live sessions).
+  // One shot; SetupPage handles re-probe on focus.
+  useEffect(() => {
+    if (!state.loaded || totalRows > 0) return;
+    let cancelled = false;
+    fetchSetupStatus()
+      .then((s) => {
+        if (!cancelled) setSetupStatus(s);
+      })
+      .catch(() => {
+        if (!cancelled) setSetupStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [state.loaded, totalRows]);
+
+  const setupIncomplete =
+    setupStatus !== null && !(setupStatus.skill && setupStatus.hooks && setupStatus.mcp);
 
   const onDelete = async (meta: SessionMeta) => {
     if (meta.status !== "ended") {
@@ -96,12 +117,24 @@ export function SessionListPage() {
       {!state.loaded ? (
         <div className="gc-empty">loading…</div>
       ) : totalRows === 0 ? (
-        <div className="gc-empty">
-          <p>no sessions yet</p>
-          <p className="gc-dim">
-            Run <code>claude</code> in your project and ask it to <code>/grill-cheese</code> a plan.
-          </p>
-        </div>
+        setupIncomplete ? (
+          <div className="gc-empty">
+            <p>no sessions yet</p>
+            <p className="gc-dim">
+              grill-cheese needs a one-time install before Claude Code can drive this canvas.
+            </p>
+            <p>
+              <Link to="/setup" className="gc-empty-cta">Open setup →</Link>
+            </p>
+          </div>
+        ) : (
+          <div className="gc-empty">
+            <p>no sessions yet</p>
+            <p className="gc-dim">
+              Run <code>claude</code> in your project and ask it to <code>/grill-cheese</code> a plan.
+            </p>
+          </div>
+        )
       ) : (
         <div className="gc-list-body">
           <NeedsYouBar rows={needsYou} onPick={pick} onDelete={onDelete} />
