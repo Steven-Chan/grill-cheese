@@ -154,7 +154,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-back-link:hover { color: var(--gc-accent); }
 .gc-detail-title {
   font-family: var(--gc-serif);
-  font-size: 28px;
+  font-size: 20px;
   font-weight: 400;
   margin: 0;
   flex: 1;
