@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import {
   EditorContent,
@@ -19,8 +19,9 @@ import {
   type ActionRejection,
 } from "../api";
 import { useSession } from "../SessionContext";
-import type { ChatMessage, DecisionNode, PendingProposal } from "../types";
+import type { Branch, ChatMessage, DecisionNode, PendingProposal } from "../types";
 import { HistoryEntry } from "./HistoryEntry";
+import { FOCUS_COMPOSER_EVENT } from "../hooks/useShortcuts";
 
 // Decision map is the sole xyflow + dagre surface in the GUI (ADR-0002).
 // Lazy-loaded so the ~150KB xyflow bundle never touches the initial paint
@@ -334,6 +335,50 @@ function DecisionCard({
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const ownAnswerRef = useRef<HTMLTextAreaElement | null>(null);
 
+  // Roving-tabindex focus state for the ARIA listbox (ADR-0004). Exactly one
+  // branch row carries tabIndex=0 at a time; the rest are -1. `Enter` on the
+  // focused row picks+submits in single-mode, `Space` toggles, `Cmd+Enter`
+  // submits in multi-mode. Initial focus = first ★ recommended branch so
+  // the common "accept the recommendation" path is a single keystroke.
+  const initialFocusId = useMemo(() => {
+    const rec = live.find((b) => b.is_recommended);
+    return rec?.id ?? live[0]?.id ?? null;
+  }, [live]);
+  const [focusedBranchId, setFocusedBranchId] = useState<string | null>(initialFocusId);
+  // Reset focus when node identity changes. Also auto-focus the row in the
+  // DOM so the page starts with the listbox active (no Tab needed) — but
+  // yield if the user is already typing somewhere; don't steal focus from
+  // the brief banner / sidebar / any other input.
+  useEffect(() => {
+    setFocusedBranchId(initialFocusId);
+    if (initialFocusId) {
+      const t = window.setTimeout(() => {
+        const active = document.activeElement;
+        const typing =
+          active instanceof HTMLElement &&
+          (active.tagName === "INPUT" ||
+            active.tagName === "TEXTAREA" ||
+            active.isContentEditable);
+        if (typing) return;
+        document.getElementById(`branch-${node.id}-${initialFocusId}`)?.focus();
+      }, 0);
+      return () => window.clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.id]);
+  // If chat soft-removes the currently-focused branch, hop to first live row.
+  useEffect(() => {
+    if (focusedBranchId && !live.some((b) => b.id === focusedBranchId)) {
+      setFocusedBranchId(live[0]?.id ?? null);
+    }
+  }, [focusedBranchId, live]);
+  // Ref-mirror so the composer Esc callback always reads the latest value
+  // without re-creating the callback on every re-render.
+  const focusedBranchIdRef = useRef<string | null>(focusedBranchId);
+  useEffect(() => {
+    focusedBranchIdRef.current = focusedBranchId;
+  }, [focusedBranchId]);
+
   // reset selection when node identity changes only.
   // `live` is recomputed (new array ref) on every node_updated SSE — including
   // chat-message broadcasts. Including `live` in deps would wipe the user's
@@ -445,6 +490,93 @@ function DecisionCard({
     }
   };
 
+  // ARIA-listbox key handler (ADR-0004). ↑/↓ moves focus, Space toggles,
+  // Enter (single-mode) picks+submits, Cmd/Ctrl+Enter (multi-mode) submits.
+  // Digit 1-9 is a type-ahead jump to the matching hint-chip index.
+  const onListKeyDown = (e: React.KeyboardEvent<HTMLUListElement>) => {
+    if (locked || live.length === 0) return;
+    const idx = focusedBranchId
+      ? live.findIndex((b) => b.id === focusedBranchId)
+      : -1;
+    if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+      e.preventDefault();
+      const next = live[(idx + 1 + live.length) % live.length];
+      setFocusedBranchId(next.id);
+      document.getElementById(`branch-${node.id}-${next.id}`)?.focus();
+      return;
+    }
+    if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+      e.preventDefault();
+      const prev = live[(idx - 1 + live.length) % live.length];
+      setFocusedBranchId(prev.id);
+      document.getElementById(`branch-${node.id}-${prev.id}`)?.focus();
+      return;
+    }
+    if (e.key === " " && focusedBranchId) {
+      e.preventDefault();
+      togglePick(focusedBranchId);
+      return;
+    }
+    if (e.key === "Enter") {
+      if ((e.metaKey || e.ctrlKey) && canSubmit) {
+        e.preventDefault();
+        void send("next");
+        return;
+      }
+      if (!multi && focusedBranchId) {
+        e.preventDefault();
+        if (busy) return;
+        const id = focusedBranchId;
+        setPicked(new Set([id]));
+        setBusy("next");
+        // Submit directly with the picked id — avoids the setState/closure
+        // race that would otherwise make send() read stale `realPicked`.
+        // busy guard above + setBusy here mirror send()'s contract so
+        // rapid Enter presses cannot double-submit.
+        postAction(sid, node.id, "next", { branch_ids: [id] })
+          .catch((err) => {
+            const rej = err as ActionRejection;
+            if (rej && typeof rej.status === "number") {
+              if (rej.err === "branch_removed") onToast("This option was removed in a recent chat.");
+              else if (rej.err === "node locked") onToast("This question is already settled.");
+              else onToast(`Action rejected: ${rej.err ?? rej.status}`);
+            } else {
+              onToast("Network error");
+            }
+          })
+          .finally(() => setBusy(null));
+        return;
+      }
+      // multi-mode bare Enter: no-op (Cmd+Enter is the submit key)
+    }
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && /^[1-9]$/.test(e.key)) {
+      const i = parseInt(e.key, 10) - 1;
+      const target = live[i];
+      if (target) {
+        e.preventDefault();
+        setFocusedBranchId(target.id);
+        document.getElementById(`branch-${node.id}-${target.id}`)?.focus();
+      }
+    }
+  };
+
+  // Own Answer Cmd/Ctrl+Enter submits with current toggled set + typed text.
+  const onOwnAnswerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      if (!canSubmit || locked || busy) return;
+      e.preventDefault();
+      void send("next");
+    }
+  };
+
+  // Composer layered-Esc callback: blur composer + return focus to the
+  // currently focused branch row. Ref-mirrored focusedBranchId so the
+  // callback identity stays stable.
+  const returnFocusToBranches = useCallback(() => {
+    const id = focusedBranchIdRef.current;
+    if (id) document.getElementById(`branch-${node.id}-${id}`)?.focus();
+  }, [node.id]);
+
   return (
     <>
       <article className={`gc-bigcard${locked ? " locked" : ""}`}>
@@ -455,14 +587,31 @@ function DecisionCard({
         <h2 className="gc-bigcard-q">{node.question}</h2>
         {node.reasoning && <p className="gc-bigcard-reasoning">{node.reasoning}</p>}
 
-        <ul className="gc-bigcard-branches">
-          {live.map((b) => {
+        <ul
+          className="gc-bigcard-branches"
+          role="listbox"
+          aria-multiselectable={multi}
+          aria-label="Branches"
+          onKeyDown={onListKeyDown}
+        >
+          {live.map((b, i) => {
             const checked = picked.has(b.id);
+            const isFocused = focusedBranchId === b.id;
+            const rowId = `branch-${node.id}-${b.id}`;
             return (
               <li
                 key={b.id}
-                className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}`}
+                id={rowId}
+                role="option"
+                aria-selected={checked}
+                tabIndex={isFocused ? 0 : -1}
+                className={`gc-branch${checked ? " checked" : ""}${b.is_recommended ? " recommended" : ""}${isFocused ? " focused" : ""}`}
                 draggable={!locked}
+                onFocus={() => setFocusedBranchId(b.id)}
+                onClick={() => {
+                  // Sync focus on click so subsequent key events feel coherent.
+                  setFocusedBranchId(b.id);
+                }}
                 onDragStart={(e) => {
                   if (locked) return;
                   e.dataTransfer.effectAllowed = "copy";
@@ -472,12 +621,14 @@ function DecisionCard({
                   );
                 }}
               >
-                <label>
+                <span className="gc-branch-hintkey" aria-hidden="true">{i + 1}</span>
+                <label onClick={(e) => e.stopPropagation()}>
                   <input
                     type={multi ? "checkbox" : "radio"}
                     name={`branch-${node.id}`}
                     checked={checked}
                     disabled={locked}
+                    tabIndex={-1}
                     onChange={() => togglePick(b.id)}
                   />
                   <span className="gc-branch-text">
@@ -492,7 +643,11 @@ function DecisionCard({
                   className="gc-branch-use-as-draft"
                   title="Use as draft for Own Answer"
                   disabled={locked}
-                  onClick={() => useAsDraft(b.label)}
+                  tabIndex={-1}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    useAsDraft(b.label);
+                  }}
                 >
                   use as draft
                 </button>
@@ -509,6 +664,7 @@ function DecisionCard({
               click handler and (in some browsers) skip placing the caret.
               Each control owns its own label via htmlFor. */}
           <li
+            role="none"
             className={`gc-branch gc-branch-own${ownAnswerSelected ? " checked" : ""}`}
           >
             {!multi && (
@@ -533,9 +689,10 @@ function DecisionCard({
                 ref={ownAnswerRef}
                 className="gc-own-answer-textarea"
                 rows={2}
-                placeholder="type your answer, or drag a branch's “use as draft” into here…"
+                placeholder="type your answer, or drag a branch's “use as draft” into here… (Cmd/Ctrl+Enter submits)"
                 value={ownAnswer}
                 onChange={(e) => handleOwnAnswerChange(e.target.value)}
+                onKeyDown={onOwnAnswerKeyDown}
                 disabled={locked}
               />
             </div>
@@ -559,23 +716,42 @@ function DecisionCard({
           </div>
         )}
       </article>
-      <ComposerPanel node={node} sid={sid} onToast={onToast} locked={locked} />
+      <ComposerPanel
+        node={node}
+        sid={sid}
+        onToast={onToast}
+        locked={locked}
+        onEscape={returnFocusToBranches}
+        branches={live}
+      />
     </>
   );
 }
 
 // ---------- composer (always-visible) ----------
 
+interface MentionState {
+  open: boolean;
+  query: string;
+  range: { from: number; to: number };
+  coords: { left: number; top: number };
+  selected: number;
+}
+
 function ComposerPanel({
   node,
   sid,
   onToast,
   locked,
+  onEscape,
+  branches,
 }: {
   node: DecisionNode;
   sid: string;
   onToast: (msg: string) => void;
   locked?: boolean;
+  onEscape?: () => void;
+  branches: Branch[];
 }) {
   const messages = node.chat_messages ?? [];
   const proposals = node.pending_proposals ?? [];
@@ -603,12 +779,28 @@ function ComposerPanel({
   const [busy, setBusy] = useState<"send" | "accept" | "close" | null>(null);
   const [pickedProposalId, setPickedProposalId] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const composerWrapRef = useRef<HTMLDivElement | null>(null);
   // Tiptap v3's useEditor does NOT re-render on every transaction. Reading
   // `editor.isEmpty` directly during render is stale — the Send button
   // would only flip to enabled after some unrelated React state change
   // (typing in the Own Answer textarea, etc.) forced a re-render. Mirror
   // emptiness into React state via onCreate/onUpdate.
   const [editorEmpty, setEditorEmpty] = useState(true);
+  // @-mention popup (ADR-0004). null when closed.
+  const [mention, setMention] = useState<MentionState | null>(null);
+
+  // Branches eligible for @-mention insertion — drop user-authored synth
+  // branches (typed-text echoes), keep Claude-proposed ones in display order.
+  const mentionBranches = useMemo(
+    () => branches.filter((b) => !b.user_authored),
+    [branches],
+  );
+  const mentionResults = useMemo(() => {
+    if (!mention) return [] as Branch[];
+    const q = mention.query.trim().toLowerCase();
+    if (!q) return mentionBranches;
+    return mentionBranches.filter((b) => b.label.toLowerCase().includes(q));
+  }, [mention, mentionBranches]);
 
   const editor = useEditor({
     extensions: [
@@ -620,7 +812,7 @@ function ComposerPanel({
     editorProps: {
       attributes: {
         class: "gc-composer-editor",
-        "aria-label": "Chat composer (drag branches to insert chips)",
+        "aria-label": "Chat composer (drag branches to insert chips, or type @ to pick)",
       },
     },
     onCreate: ({ editor }) => setEditorEmpty(editor.isEmpty),
@@ -679,24 +871,174 @@ function ComposerPanel({
     }
   };
 
-  // Cmd+Enter / Ctrl+Enter to send. Attached on the ProseMirror DOM. Uses a
-  // ref so the listener always sees the latest sendCurrent without
-  // re-attaching every render.
+  // Ref-mirror sendCurrent so the keydown listener always sees the latest.
   const sendRef = useRef<() => Promise<void>>(async () => {});
   sendRef.current = sendCurrent;
+
+  // Insert a branch chip at the current @-mention range, then close the popup.
+  const insertMentionChip = (b: Branch) => {
+    if (!editor || !mention) return;
+    const { from, to } = mention.range;
+    editor
+      .chain()
+      .focus()
+      .insertContentAt({ from, to }, [
+        { type: "branchChip", attrs: { branchId: b.id, label: b.label } },
+        { type: "text", text: " " },
+      ])
+      .run();
+    setMention(null);
+  };
+  // Mirror mention + results so the keydown listener's stale closure can read
+  // current state without re-attaching on every change.
+  const mentionRef = useRef<MentionState | null>(null);
+  mentionRef.current = mention;
+  const mentionResultsRef = useRef<Branch[]>(mentionResults);
+  mentionResultsRef.current = mentionResults;
+  const insertChipRef = useRef(insertMentionChip);
+  insertChipRef.current = insertMentionChip;
+
+  // Detect `@<query>` typed at the caret and open the mention popup. Closes
+  // on caret move out of range / whitespace / blur.
+  useEffect(() => {
+    if (!editor) return;
+    const update = () => {
+      const sel = editor.state.selection;
+      if (!sel.empty) {
+        setMention(null);
+        return;
+      }
+      const $from = sel.$from;
+      const parentOffset = $from.parentOffset;
+      const start = Math.max(0, parentOffset - 40);
+      const before = $from.parent.textBetween(start, parentOffset, "\n", "\0");
+      const m = /(^|\s)@(\w*)$/.exec(before);
+      if (!m) {
+        setMention(null);
+        return;
+      }
+      const query = m[2];
+      const triggerLen = query.length + 1; // "@" + query chars
+      const to = $from.pos;
+      const from = to - triggerLen;
+      let coords = { left: 0, top: 0 };
+      try {
+        const c = editor.view.coordsAtPos(to);
+        const wrapRect = composerWrapRef.current?.getBoundingClientRect();
+        coords = {
+          left: c.left - (wrapRect?.left ?? 0),
+          top: c.bottom - (wrapRect?.top ?? 0),
+        };
+      } catch {
+        // coordsAtPos can throw mid-transaction; popup stays at last coords.
+      }
+      setMention((cur) => ({
+        open: true,
+        query,
+        range: { from, to },
+        coords,
+        selected: cur && cur.open ? Math.min(cur.selected, 99) : 0,
+      }));
+    };
+    editor.on("selectionUpdate", update);
+    editor.on("update", update);
+    editor.on("blur", () => setMention(null));
+    return () => {
+      editor.off("selectionUpdate", update);
+      editor.off("update", update);
+    };
+  }, [editor]);
+
+  // Clamp mention.selected when the filtered result set shrinks.
+  useEffect(() => {
+    if (!mention) return;
+    if (mention.selected >= mentionResults.length && mentionResults.length > 0) {
+      setMention((m) => (m ? { ...m, selected: mentionResults.length - 1 } : m));
+    }
+  }, [mention, mentionResults.length]);
+
+  // Composer keydown handler — handles, in priority order:
+  //   1. Mention popup nav (Esc / ↑↓ / Enter / digit) when popup is open.
+  //   2. Cmd/Ctrl+Enter → send.
+  //   3. Esc (popup closed) → blur editor + return focus to focused branch.
+  // Registered with capture phase so we beat ProseMirror's built-in handlers.
   useEffect(() => {
     if (!editor) return;
     const dom = editor.view.dom;
     const onKeyDown = (e: KeyboardEvent) => {
+      const m = mentionRef.current;
+      if (m && m.open) {
+        const results = mentionResultsRef.current;
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          setMention(null);
+          return;
+        }
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          e.stopPropagation();
+          setMention((s) =>
+            s ? { ...s, selected: Math.min(s.selected + 1, Math.max(0, results.length - 1)) } : s,
+          );
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          e.stopPropagation();
+          setMention((s) => (s ? { ...s, selected: Math.max(s.selected - 1, 0) } : s));
+          return;
+        }
+        if (e.key === "Enter" && !e.metaKey && !e.ctrlKey) {
+          e.preventDefault();
+          e.stopPropagation();
+          const pick = results[m.selected];
+          if (pick) insertChipRef.current(pick);
+          return;
+        }
+        if (
+          !e.metaKey &&
+          !e.ctrlKey &&
+          !e.altKey &&
+          /^[1-9]$/.test(e.key)
+        ) {
+          const i = parseInt(e.key, 10) - 1;
+          const pick = results[i];
+          if (pick) {
+            e.preventDefault();
+            e.stopPropagation();
+            insertChipRef.current(pick);
+            return;
+          }
+        }
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
         void sendRef.current();
+        return;
+      }
+      if (e.key === "Escape" && !(m && m.open)) {
+        e.preventDefault();
+        e.stopPropagation();
+        editor.commands.blur();
+        onEscape?.();
       }
     };
-    dom.addEventListener("keydown", onKeyDown);
-    return () => dom.removeEventListener("keydown", onKeyDown);
-  }, [editor]);
+    dom.addEventListener("keydown", onKeyDown, true);
+    return () => dom.removeEventListener("keydown", onKeyDown, true);
+  }, [editor, onEscape]);
+
+  // Window event: Cmd/Ctrl+K from anywhere on the page → focus this composer.
+  useEffect(() => {
+    if (!editor) return;
+    const onFocus = () => {
+      if (locked) return;
+      editor.commands.focus("end");
+    };
+    window.addEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+    return () => window.removeEventListener(FOCUS_COMPOSER_EVENT, onFocus);
+  }, [editor, locked]);
 
   const accept = async () => {
     if (busy || proposals.length === 0 || !pickedProposalId) return;
@@ -851,7 +1193,7 @@ function ComposerPanel({
           Combine
         </button>
       </div>
-      <div className="gc-composer-input">
+      <div className="gc-composer-input" ref={composerWrapRef}>
         {/* EditorContent wraps the ProseMirror root in its OWN div — that
             wrapper is the actual flex child here, so it must carry flex: 1
             and min-width: 0. Otherwise it collapses to ProseMirror's
@@ -865,6 +1207,33 @@ function ComposerPanel({
         >
           {busy === "send" ? "sending…" : "Send"}
         </button>
+        {mention && mention.open && mentionResults.length > 0 && (
+          <ul
+            className="gc-mention-popup"
+            role="listbox"
+            aria-label="Branch mention picker"
+            style={{ left: mention.coords.left, top: mention.coords.top + 4 }}
+          >
+            {mentionResults.slice(0, 9).map((b, i) => (
+              <li
+                key={b.id}
+                role="option"
+                aria-selected={i === mention.selected}
+                className={`gc-mention-item${i === mention.selected ? " selected" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  insertMentionChip(b);
+                }}
+                onMouseEnter={() =>
+                  setMention((s) => (s ? { ...s, selected: i } : s))
+                }
+              >
+                <span className="gc-mention-hintkey" aria-hidden="true">{i + 1}</span>
+                <span className="gc-mention-label">{b.label}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </section>
   );

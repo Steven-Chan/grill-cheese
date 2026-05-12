@@ -13,11 +13,15 @@ interface Props {
 export function SidebarHistory({ open, selectedNodeId, onSelect, onClose }: Props) {
   const { state } = useSession();
 
-  // Escape closes drawer
+  // Escape closes drawer — but yield to higher-priority overlays so the cheatsheet
+  // modal and the @-mention popup can consume Esc first (ADR-0004 layered Esc).
   useEffect(() => {
     if (!open) return;
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key !== "Escape") return;
+      if (e.defaultPrevented) return;
+      if (document.body.hasAttribute("data-cheatsheet-open")) return;
+      onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);

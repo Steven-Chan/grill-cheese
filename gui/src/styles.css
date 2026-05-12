@@ -1228,3 +1228,170 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-map-edge-user-authored .react-flow__edge-text {
   fill: var(--gc-accent);
 }
+
+/* ---------- keyboard model (ADR-0004) ---------- */
+
+/* Branch row hint-chip — numbered keystroke badge, also the index used in the
+   @-mention popup. Always visible but visually quiet. */
+.gc-branch-hintkey {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border: 1px solid var(--gc-edge);
+  border-radius: 3px;
+  color: var(--gc-fg-dim);
+  background: var(--gc-bg-card);
+  opacity: 0.7;
+  pointer-events: none;
+}
+.gc-branch.focused .gc-branch-hintkey {
+  opacity: 1;
+  border-color: var(--gc-accent);
+  color: var(--gc-accent);
+}
+
+/* Roving-tabindex focus ring on the listbox option. Outline (not box-shadow)
+   so it survives the row's existing border transitions without jitter. */
+.gc-bigcard-branches[role="listbox"] {
+  outline: none;
+}
+.gc-branch[role="option"] {
+  outline: none;
+}
+.gc-branch[role="option"]:focus,
+.gc-branch[role="option"]:focus-visible,
+.gc-branch.focused {
+  border-color: var(--gc-accent);
+  box-shadow: 0 0 0 2px rgba(132, 212, 179, 0.25);
+}
+
+/* @-mention popup. Anchored to the composer input wrapper which is the
+   nearest positioned ancestor. */
+.gc-composer-input { position: relative; }
+.gc-mention-popup {
+  position: absolute;
+  z-index: 30;
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  min-width: 220px;
+  max-width: 360px;
+  background: var(--gc-bg-elev);
+  border: 1px solid var(--gc-edge);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.gc-mention-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.gc-mention-item.selected {
+  background: rgba(132, 212, 179, 0.14);
+}
+.gc-mention-hintkey {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  padding: 2px 5px;
+  border: 1px solid var(--gc-edge);
+  border-radius: 3px;
+  color: var(--gc-fg-dim);
+  opacity: 0.75;
+}
+.gc-mention-item.selected .gc-mention-hintkey {
+  border-color: var(--gc-accent);
+  color: var(--gc-accent);
+  opacity: 1;
+}
+.gc-mention-label { flex: 1; }
+
+/* Cheatsheet modal. Centered overlay; Esc + backdrop click close. */
+.gc-cheatsheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.gc-cheatsheet-panel {
+  background: var(--gc-bg-elev);
+  border: 1px solid var(--gc-edge);
+  border-radius: 10px;
+  max-width: 640px;
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.gc-cheatsheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--gc-edge);
+}
+.gc-cheatsheet-head h2 {
+  margin: 0;
+  font-family: var(--gc-serif);
+  font-size: 20px;
+  font-weight: 400;
+}
+.gc-cheatsheet-body {
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+}
+.gc-cheatsheet-section + .gc-cheatsheet-section { margin-top: 18px; }
+.gc-cheatsheet-section h3 {
+  margin: 0 0 8px 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--gc-fg-dim);
+  font-weight: 600;
+}
+.gc-cheatsheet-section dl { margin: 0; }
+.gc-cheatsheet-row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 12px;
+  padding: 4px 0;
+  align-items: center;
+}
+.gc-cheatsheet-keys {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--gc-accent);
+}
+.gc-cheatsheet-effect { font-size: 13px; color: var(--gc-fg); margin: 0; }
+
+/* Toolbar footer hint — `Press ? for shortcuts`. Bottom-left fab area; low
+   contrast so it doesn't compete with the fire chip on the right. */
+.gc-detail-shortcut-hint {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  font-size: 11px;
+  color: var(--gc-fg-dim);
+  opacity: 0.6;
+  pointer-events: none;
+  user-select: none;
+}
+.gc-detail-shortcut-hint kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  border: 1px solid var(--gc-edge);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--gc-bg-card);
+}

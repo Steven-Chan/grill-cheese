@@ -9,10 +9,20 @@ Source of truth for terminology. Read this before edits that touch the decision-
 - **Branch** — one Claude-proposed answer on a decision node. Has `id`, `label`, `rationale`, `is_recommended`. Synth `user_authored` branches are appended on `next` submissions that carried Own Answer text.
 - **Own Answer** — the free-text commit input on a decision card. Filled when no Claude-proposed branch fits. Submitting fires `next`; server synthesizes a `user_authored` Branch from the text and includes it in `chosen_branch_ids`. NOT a "note" or branch metadata. The wire field is named `own_answer` (server schema + GUI action). Lives in the gap between branches list and action row.
 - **Recommended (★)** — single-mode: one branch marked, pre-selected. Multi-mode: any subset pre-checked as the recommended set.
+- **★ initial focus** — on render, keyboard focus lands on the recommended branch (single-mode) or the first ★ branch (multi-mode; first live branch if none). `Enter` from there picks AND submits in single-mode without any other keystroke. See ADR-0004.
+- **Hint chip** — small monospace badge (`1`, `2`, `3`, `4`) in each branch row corner. Always visible but visually quiet. Doubles as the index inside the `@`-mention popup so muscle memory carries between surfaces. Distinct from Branch chip (the composer drop target).
+
+## Keyboard model
+
+- **Listbox semantics** — branch container is an ARIA listbox with roving tabindex. `↑/↓` moves focus, `Space` toggles, `Enter` (single-mode) picks+submits, `Cmd/Ctrl+Enter` (multi-mode) submits. Digit `1..9` is a type-ahead jump. Full spec lives in ADR-0004.
+- **Composer-jump** — `Cmd/Ctrl+K` (window-scoped). Focuses the always-visible chat composer from any card surface. Picked over `Cmd+C` (collides with copy). Mirrors the Slack / Linear / GitHub / Notion command-palette convention.
+- **@-mention popup** — keyboard alternative to drag-dropping a Branch chip. Type `@` inside the composer; a numbered picker of live branches opens. Type `1..4` (or `↑/↓ + Enter`) to insert a `BranchChipNode` identical to the drag-drop primitive.
+- **Layered Esc** — in the composer: first `Esc` closes the `@`-popup if open and keeps text + focus; second `Esc` (or `Esc` when no popup) blurs the editor and returns focus to the prior branch. Never destructive — typed text and chips survive blur.
+- **Cheatsheet (`?`)** — non-textarea keystroke opens a modal listing every binding grouped by surface. Toolbar footer carries a `Press ? for shortcuts` hint.
 
 ## Chat (inline + non-blocking)
 
-- **Composer** — always-visible chat input on every decision card. Distinct from Own Answer. Fires `chat_user_msg`; does NOT commit the question. Hosts the shortcut button strip and the branch-chip drop target.
+- **Composer** — always-visible chat input on every decision card. Distinct from Own Answer. Fires `chat_user_msg`; does NOT commit the question. Hosts the shortcut button strip, the branch-chip drop target, and the `@`-mention popup. Sends on `Cmd/Ctrl+Enter` (ADR-0004).
 - **Branch chip** — composition primitive. User drags or clicks a branch row to insert a chip into the composer. Serializes inline in the message text as `[Branch <id>: <label>]`. No schema change; Claude parses the brackets on read.
 - **Discussion shortcut** — composer-side button that prefills the composer with a seed template. v1 set: `Explain ▮`, `Check implementation of ▮`, `Compare ▮ and ▮`, `Combine ▮ and ▮`. `▮` slots accept chips; if left empty, the agent treats them as "this question".
 - **Close-match shortcut** — per-branch "use as draft" button on each branch row. Prefills the **Own Answer** textarea with `<label> — <rationale>`. Targets the commit surface, NOT the composer. Semantically distinct from discussion shortcuts.
