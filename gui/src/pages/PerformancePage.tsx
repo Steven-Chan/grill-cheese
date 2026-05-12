@@ -132,14 +132,16 @@ function PerfRow({ entry }: { entry: PerformanceEntry }) {
   // Link to /sessions/<sid> — landing page handles "session pruned" via the
   // snapshot 404 (existing behaviour). No special handling needed here.
   const title = entry.title || entry.session_id.slice(0, 8);
+  const isRetro = entry.kind === "retro";
   return (
     <li className="gc-perf-row">
       <Link to={`/sessions/${entry.session_id}`} className="gc-perf-row-link">
         <span className="gc-perf-row-title">{title}</span>
         <span className="gc-perf-row-chips">
+          {isRetro && <span className="gc-chip gc-chip-retro">retro</span>}
           {entry.project && <span className="gc-chip gc-chip-project">{entry.project}</span>}
           <span className="gc-chip gc-chip-verdict">{entry.verdict}</span>
-          <ScoreChip score={entry.score} count={entry.decision_count} />
+          {!isRetro && <ScoreChip score={entry.score} count={entry.decision_count} />}
         </span>
         <span className="gc-perf-row-time">{fmtTime(entry.ended_at)}</span>
       </Link>
@@ -236,13 +238,20 @@ function uniqueProjects(entries: PerformanceEntry[]): string[] {
 }
 
 function meanScore(entries: PerformanceEntry[]): number | null {
-  const scored = entries.filter((e) => e.score != null) as Array<PerformanceEntry & { score: number }>;
+  // Retro sessions excluded: their "score" is alignment-on-proposals, not
+  // agent-vs-user pick rate. Same logic as ADR-0003 nulls-skipped mean.
+  const scored = entries.filter((e) => e.score != null && e.kind !== "retro") as Array<
+    PerformanceEntry & { score: number }
+  >;
   if (scored.length === 0) return null;
   return scored.reduce((acc, e) => acc + e.score, 0) / scored.length;
 }
 
 function sumDecisions(entries: PerformanceEntry[]): number {
-  return entries.reduce((acc, e) => acc + (e.decision_count || 0), 0);
+  return entries.reduce(
+    (acc, e) => acc + (e.kind === "retro" ? 0 : e.decision_count || 0),
+    0,
+  );
 }
 
 function fmtTime(ts: number): string {

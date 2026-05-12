@@ -158,6 +158,10 @@ export interface PerformanceEntry {
   score: number | null;
   decision_count: number;
   verdict: PerfVerdict;
+  // null/undefined for regular grills; "retro" tags retrospective sessions
+  // (ADR-0005). GUI uses this to render a distinct chip and exclude retros
+  // from pick-rate aggregates.
+  kind?: SessionKind | null;
 }
 
 export type SseEvent =

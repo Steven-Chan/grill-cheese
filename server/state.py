@@ -460,6 +460,7 @@ class Store:
             score=mean,
             decision_count=len(scores),
             verdict=verdict,  # type: ignore[arg-type]
+            kind=s.kind,
         )
         performance.append(entry)
 

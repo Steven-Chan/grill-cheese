@@ -459,6 +459,15 @@ async def end_session(session_id: str, summary: str = "") -> dict:
         # the explicit-bailout path (vs the verdict-driven auto-end in hooks).
         if s.status != "ended":
             store.emit_performance_entry(session_id, verdict="end_session")
+            # ADR-0005: retro sessions advance the marker on end_session too
+            # (covers the empty-window early-exit path where the skill calls
+            # end_session immediately).
+            if s.kind == "retro":
+                try:
+                    from . import retro as retro_mod
+                    retro_mod.write_marker(s.project)
+                except Exception:
+                    pass
         s.status = "ended"
     await store.broadcast(
         session_id,

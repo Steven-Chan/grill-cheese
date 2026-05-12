@@ -202,6 +202,15 @@ async def actions_endpoint(request: Request) -> Response:
                         for b in parent.branches:
                             if b.id == n.parent_branch_id and b.child_node_id == nid:
                                 b.child_node_id = None
+            # ADR-0005: a retro session's terminal verdict advances the marker
+            # so the next /retro window starts here. continue_grill is excluded
+            # (handled above — verdict didn't fire).
+            if s2.kind == "retro":
+                try:
+                    from . import retro as retro_mod
+                    retro_mod.write_marker(s2.project)
+                except Exception:
+                    logger.exception("retro: failed to write marker for %s", s2.project)
                 s2.nodes.pop(nid, None)
             s2.status = "ended"
         await store.broadcast(

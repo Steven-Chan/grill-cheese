@@ -314,6 +314,9 @@ class PerformanceEntry(BaseModel):
     # number of decisions that contributed to score (excludes nulls).
     decision_count: int = 0
     verdict: PerfVerdict
+    # Mirrors Session.kind so the GUI can tag retro rows differently
+    # without re-reading the session JSON. None for regular grills.
+    kind: Optional[SessionKind] = None
 
 
 # ---- claude code hook payload (subset we care about) ----

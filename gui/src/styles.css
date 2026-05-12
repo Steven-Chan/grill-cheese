@@ -217,6 +217,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   white-space: nowrap;
 }
 .gc-chip-project { background: rgba(132, 212, 179, 0.1); color: var(--gc-accent); border-color: rgba(132, 212, 179, 0.3); }
+.gc-chip-retro { background: rgba(176, 124, 199, 0.12); color: var(--gc-impl); border-color: rgba(176, 124, 199, 0.4); }
 .gc-status-active { color: var(--gc-accent); border-color: rgba(132, 212, 179, 0.4); }
 .gc-status-paused { color: var(--gc-warn); border-color: rgba(232, 142, 93, 0.4); }
 .gc-status-ended { color: var(--gc-fg-faint); }
