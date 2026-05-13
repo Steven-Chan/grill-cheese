@@ -553,6 +553,11 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-bigcard-stage {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
+  /* Clip the off-viewport translateX of exiting/entering slots so the
+     swap doesn't push the page into horizontal scroll. The small
+     filter:blur halo at the slot edges (≤4px) is also clipped — fair
+     tradeoff vs a viewport-wide layout shift. */
+  overflow: hidden;
 }
 .gc-bigcard-slot {
   grid-column: 1;

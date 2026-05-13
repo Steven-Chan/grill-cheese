@@ -208,14 +208,22 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
 
   const dirClass = slots.direction === "back" ? " back" : "";
 
+  // React keys keyed off the view ensure rapid swaps remount the slot DOM
+  // nodes — CSS animations are NOT re-triggered by className changes alone,
+  // so without a key change the second-click-within-the-transition-window
+  // would silently inherit the in-progress (or finished) animation state.
+  const prevSlotKey = slots.prev ? `prev:${viewKey(slots.prev)}` : null;
+  const currSlotKey = `curr:${currKey}`;
+
   return (
     <div className="gc-bigcard-stage">
       {slots.prev && (
         <div
+          key={prevSlotKey ?? undefined}
           className={`gc-bigcard-slot exiting${dirClass}`}
           aria-hidden="true"
           // `inert` removes the receding card from tab order during the
-          // 150ms exit window — pointer-events:none alone leaves it
+          // exit window — pointer-events:none alone leaves it
           // keyboard-reachable. Baseline in all modern browsers.
           // @ts-expect-error inert is valid HTML but TS DOM types lag.
           inert=""
@@ -224,6 +232,7 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
         </div>
       )}
       <div
+        key={currSlotKey}
         className={`gc-bigcard-slot${slots.prev ? " entering" : ""}${dirClass}`}
       >
         {renderView(slots.curr)}
