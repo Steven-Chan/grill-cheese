@@ -77,7 +77,7 @@ GUI actions and their server effect:
 
 Inline-chat actions (`chat_user_msg` / `chat_accept` / `chat_close`) bypass the click buffer — they're handled in `hooks.py:_handle_chat_action`. Chat is non-blocking (see `docs/adr/0001-non-blocking-chat.md`): no session pause, no node lock, no `chat` action commit. Composer is always-visible; chat starts implicitly when the first `chat_user_msg` lands. Outcomes available on `apply_chat_result` / inline `proposals` are `refine` and `redirect`; `resolve` was dropped in ADR-0001.
 
-Buffered with 750ms idle window; terminal-class clicks bypass via `flush_now`. Flush assigns a per-session monotonic `seq` and emits `node_committed` SSE → shim → channel notification.
+Terminal-class clicks flush immediately via `flush_now`. Flush assigns a per-session monotonic `seq` and emits `node_committed` SSE → shim → channel notification.
 
 ### Snapshot-on-wake resilience (`skill/grill-cheese/SKILL.md`)
 Channels are fire-and-forget. If shim dies mid-session, restarts, or the SSE ring-buffer replay re-fires already-delivered events, the skill must reconcile. Pattern: track `last_seen_seq`; if next wake's seq is not `last_seen_seq + 1`, call `get_session_snapshot(session_id)` and replay any flushed nodes you missed. The shim also buffers SSE events that arrive before its stdio session is ready (drained on session start).

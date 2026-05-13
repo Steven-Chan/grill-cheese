@@ -69,8 +69,8 @@ async def actions_endpoint(request: Request) -> Response:
     """POST from GUI: next / summary verdicts / inline chat.
 
     Click flow: mutate node state immediately + broadcast node_updated, append
-    record to per-node buffer, reset 750ms idle timer. Terminal-class clicks
-    flush immediately. On flush the buffer is locked — further clicks 409.
+    record to per-node buffer. Terminal-class clicks flush immediately via
+    flush_now. On flush the buffer is locked — further clicks 409.
     Inline-chat actions (chat_user_msg / chat_accept / chat_close) bypass the
     buffer; chat is non-blocking (ADR-0001).
     """

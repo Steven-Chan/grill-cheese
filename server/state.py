@@ -34,7 +34,6 @@ from .schemas import (
 _WRAP_PENDING_SENTINEL = "__wrap_pending__"
 
 MAX_RING = 5000  # per-session SSE replay buffer
-DEBOUNCE_SECONDS = 0.75  # idle window before flushing buffered clicks
 # `chat` removed (ADR-0001): non-blocking chat means no chat action commits.
 TERMINAL_ACTIONS = {
     "next",
@@ -52,8 +51,6 @@ class Store:
         self.ring: dict[str, deque[dict[str, Any]]] = defaultdict(
             lambda: deque(maxlen=MAX_RING)
         )
-        # node_id -> debounce timer handle (asyncio.TimerHandle from call_later)
-        self._timers: dict[str, Any] = {}
         # node_id -> Event signalling buffer flushed (lazy-created in get_event)
         self._events: dict[str, asyncio.Event] = {}
         # SSE subscribers: session_id -> list[asyncio.Queue]
@@ -95,7 +92,7 @@ class Store:
         Skips dirs whose slug ∈ SKIP_LOAD_PROJECTS (e.g. smoke tests) so
         throwaway sessions don't pollute the dev GUI on server start.
 
-        Discards transient pending_actions per design: a crash mid-debounce
+        Discards transient pending_actions per design: a crash before flush
         forfeits not-yet-flushed clicks (visible node state already persisted).
         """
         root = self._data_root
@@ -309,7 +306,7 @@ class Store:
                 pass
         return node
 
-    # ---- per-node action buffer (idle-debounce flush) ----
+    # ---- per-node action buffer (flush on terminal click) ----
     def get_event(self, node_id: str) -> asyncio.Event:
         ev = self._events.get(node_id)
         if ev is None:
@@ -332,9 +329,10 @@ class Store:
     def enqueue_action(
         self, session_id: str, node_id: str, record: AskBranchesResult
     ) -> bool:
-        """Append record to pending buffer + reset 750ms idle timer.
+        """Append record to pending buffer.
         Returns False if node already locked (caller should reject).
 
+        Caller invokes flush_now after enqueue for terminal-class actions.
         Does NOT persist — the calling endpoint persists once after both
         apply_action + enqueue_action mutate the session."""
         s = self.sessions.get(session_id)
@@ -344,20 +342,10 @@ class Store:
         if not node or node.is_flushed:
             return False
         node.pending_actions.append(record)
-        existing = self._timers.pop(node_id, None)
-        if existing is not None:
-            existing.cancel()
-        loop = asyncio.get_event_loop()
-        self._timers[node_id] = loop.call_later(
-            DEBOUNCE_SECONDS, self._flush, session_id, node_id
-        )
         return True
 
     def flush_now(self, session_id: str, node_id: str) -> None:
-        """Bypass idle timer — used by terminal-class clicks (next/chat + verdicts)."""
-        existing = self._timers.pop(node_id, None)
-        if existing is not None:
-            existing.cancel()
+        """Commit pending → committed and lock the node."""
         self._flush(session_id, node_id)
 
     def _flush(self, session_id: str, node_id: str) -> None:
@@ -368,7 +356,6 @@ class Store:
         node = s.nodes.get(node_id)
         if not node or node.is_flushed:
             return
-        self._timers.pop(node_id, None)
         pending = node.pending_actions[:]
         if not pending:
             return
@@ -423,9 +410,6 @@ class Store:
 
     def clear_node_state(self, session_id: str, node_id: str) -> None:
         """End-of-session cleanup. Caller persists once after batch."""
-        timer = self._timers.pop(node_id, None)
-        if timer is not None:
-            timer.cancel()
         self._events.pop(node_id, None)
         s = self.sessions.get(session_id)
         if not s:
@@ -527,13 +511,10 @@ class Store:
         project = s.project
         owner = s.owner_id
 
-        # cancel any debounce timers + release per-node event waiters.
-        # Mirror unlock_node's pattern: .set() any unset event before dropping
-        # so stragglers awaiting get_event(node_id).wait() unblock.
+        # release per-node event waiters. Mirror unlock_node's pattern:
+        # .set() any unset event before dropping so stragglers awaiting
+        # get_event(node_id).wait() unblock.
         for node_id in list(s.nodes.keys()):
-            timer = self._timers.pop(node_id, None)
-            if timer is not None:
-                timer.cancel()
             old_ev = self._events.pop(node_id, None)
             if old_ev is not None and not old_ev.is_set():
                 old_ev.set()
