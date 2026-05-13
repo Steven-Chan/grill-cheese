@@ -81,6 +81,11 @@ export function SessionProvider({ sid, children }: Props) {
         case "node_committed": {
           const last = ev.payload.actions?.[ev.payload.actions.length - 1];
           d({ type: "node_committed", node_id: ev.payload.node_id, action: last?.action ?? null });
+          // Channel-carried hint trumps possibly-stale state. Mirrors the
+          // skill's piggy-back read of `parked_slots` from the same payload.
+          if (ev.payload.parked_slots !== undefined) {
+            d({ type: "parked_queue_updated", parked_slots: ev.payload.parked_slots });
+          }
           break;
         }
         case "chat_message_added":

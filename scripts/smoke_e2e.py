@@ -364,6 +364,10 @@ async def main():
     promoted = s_check.nodes[promoted_nid]
     assert promoted.question == "Fresh round"
     assert promoted.progress == 0.42, "main-supplied progress must land on node"
+    # Plan: parked slots are root-level sideways moves — no parent. Regression
+    # guard against a future leak of parent fields from slot payload.
+    assert promoted.parent_node_id is None, "promoted node must be root-level"
+    assert promoted.parent_branch_id is None, "promoted node must have no parent branch"
     assert len(s_check.parked_queue) == 0, "queue empty after consume"
     print(f"OK — present_parked promoted slot to node={promoted_nid}")
 

@@ -69,6 +69,10 @@ export interface Snapshot {
   // ordered list of node_ids flagged via 🚩 awaiting Claude re-surface.
   // Mirrors Session.reconsider_queue. See ADR-0009.
   reconsider_queue?: string[];
+  // Speculative queue — server returns full ParkedSlot bodies, GUI only
+  // uses slot_id + question for the dev overlay (ADR-0010). Optional for
+  // back-compat with pre-feature persisted sessions.
+  parked_queue?: Array<{ slot_id: string; question: string }>;
 }
 
 export function initialSessionState(sid: string): SessionState {
@@ -158,6 +162,10 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         wrapping: snap.wrap_summary_node_id != null,
         cmux: snap.cmux ?? null,
         reconsiderQueue: snap.reconsider_queue ?? [],
+        parkedSlots: (snap.parked_queue ?? []).map((p) => ({
+          slot_id: p.slot_id,
+          question_oneline: (p.question.split("\n").find((l) => l.trim()) ?? "").slice(0, 80),
+        })),
       };
       next.pendingNodeId = findPending(next);
       return next;
