@@ -247,6 +247,37 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
 .gc-chip-outcome-resolve { color: var(--gc-accent); }
 .gc-chip-score { font-variant-numeric: tabular-nums; }
 .gc-chip-score-empty { color: var(--gc-fg-faint); font-style: italic; }
+
+/* 🚩 reconsider flag — sidebar history row affordance (ADR-0009). */
+.gc-reconsider-flag {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.35;
+  filter: grayscale(1);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+.gc-reconsider-flag:hover { opacity: 0.85; filter: grayscale(0.5); }
+.gc-reconsider-flag.marked { opacity: 1; filter: none; background: rgba(232, 200, 93, 0.18); }
+.gc-reconsider-flag.seen   { opacity: 1; filter: none; background: rgba(232, 93, 93, 0.22); }
+.gc-reconsider-flag:disabled { cursor: default; }
+
+/* summary card warning chip when reconsider queue is non-empty. */
+.gc-summary-reconsider-warning {
+  margin: 0 0 12px 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--gc-warn);
+  background: rgba(232, 142, 93, 0.10);
+  border: 1px solid rgba(232, 142, 93, 0.35);
+  border-radius: 4px;
+}
 .gc-chip-score-high { color: var(--gc-accent); border-color: rgba(132, 212, 179, 0.4); }
 .gc-chip-score-mid { color: var(--gc-rec); border-color: rgba(212, 165, 84, 0.4); }
 .gc-chip-score-low { color: var(--gc-warn); border-color: rgba(232, 142, 93, 0.4); }

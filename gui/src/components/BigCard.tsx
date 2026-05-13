@@ -1698,11 +1698,13 @@ function SummaryCard({
   onToast: (msg: string) => void;
   forceLocked?: boolean;
 }) {
+  const { state: sessionState } = useSession();
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState<ActionKind | null>(null);
   const [showMap, setShowMap] = useState(false);
   const docsBlocked = !!node.generate_docs;
   const locked = !!forceLocked || !!node.committed || (node.chosen_branch_ids ?? []).length > 0;
+  const pendingMarks = sessionState.reconsiderQueue.length;
 
   // Esc closes the map overlay — keep close affordance available even when
   // pan/zoom has focus.
@@ -1754,6 +1756,13 @@ function SummaryCard({
       </div>
       {docsBlocked && node.docs_reason && !locked && (
         <p className="gc-summary-docs-reason gc-dim">{node.docs_reason}</p>
+      )}
+      {!locked && pendingMarks > 0 && (
+        <p className="gc-summary-reconsider-warning">
+          ⚠ {pendingMarks} {pendingMarks === 1 ? "node" : "nodes"} flagged for reconsider but
+          not re-grilled. Pick <em>Continue grilling</em> to drain the queue, or proceed
+          knowing the marks will be lost.
+        </p>
       )}
       {!locked && (
         <div className="gc-summary-continue">

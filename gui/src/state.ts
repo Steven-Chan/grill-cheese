@@ -27,6 +27,10 @@ export interface SessionState {
   wrapping: boolean;
   // null when CC wasn't launched inside cmux. Enables "Jump to terminal".
   cmux: CmuxInfo | null;
+  // ordered list of node_ids flagged via 🚩 that Claude has not yet
+  // re-surfaced. Drives the summary-card warning chip. Mirrors
+  // Session.reconsider_queue. See ADR-0009.
+  reconsiderQueue: string[];
 }
 
 export type SessionAction =
@@ -40,7 +44,8 @@ export type SessionAction =
   | { type: "node_committed"; node_id: string; action: string | null }
   | { type: "chat_message_added"; node_id: string; message: ChatMessage }
   | { type: "chat_proposals_staged"; node_id: string; proposals: PendingProposal[] }
-  | { type: "chat_closed"; node_id: string };
+  | { type: "chat_closed"; node_id: string }
+  | { type: "node_reconsider_marked"; node_id: string; reconsider_marked: "unmarked" | "marked" | "seen"; reconsider_queue: string[] };
 
 export interface Snapshot {
   id: string;
@@ -56,6 +61,9 @@ export interface Snapshot {
   // server returns root_node_id + nodes; we derive order via BFS from root + insertion fallback
   root_node_id: string | null;
   cmux?: CmuxInfo | null;
+  // ordered list of node_ids flagged via 🚩 awaiting Claude re-surface.
+  // Mirrors Session.reconsider_queue. See ADR-0009.
+  reconsider_queue?: string[];
 }
 
 export function initialSessionState(sid: string): SessionState {
@@ -73,6 +81,7 @@ export function initialSessionState(sid: string): SessionState {
     pendingNodeId: null,
     wrapping: false,
     cmux: null,
+    reconsiderQueue: [],
   };
 }
 
@@ -142,6 +151,7 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         nodeOrder: order,
         wrapping: snap.wrap_summary_node_id != null,
         cmux: snap.cmux ?? null,
+        reconsiderQueue: snap.reconsider_queue ?? [],
       };
       next.pendingNodeId = findPending(next);
       return next;
@@ -222,6 +232,16 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         pending_proposals: [],
       };
       return { ...state, nodes: { ...state.nodes, [action.node_id]: updated } };
+    }
+    case "node_reconsider_marked": {
+      const n = state.nodes[action.node_id];
+      if (!n) return state;
+      const updated: DecisionNode = { ...n, reconsider_marked: action.reconsider_marked };
+      return {
+        ...state,
+        nodes: { ...state.nodes, [action.node_id]: updated },
+        reconsiderQueue: action.reconsider_queue,
+      };
     }
     default:
       return state;

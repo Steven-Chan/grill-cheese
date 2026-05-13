@@ -105,6 +105,11 @@ export interface DecisionNode {
   // server-side. Downward changes are honest (no monotonic clamp).
   // See ADR-0007.
   progress?: number | null;
+  // reconsider mark (🚩) state. "marked" = user just clicked, Claude not
+  // yet woken; "seen" = shim delivered the channel notif, Claude has it.
+  // Cleared back to "unmarked" when Claude pushes the reconsider-fork
+  // node N'. See ADR-0009.
+  reconsider_marked?: "unmarked" | "marked" | "seen";
 }
 
 export interface HookTrace {
@@ -180,9 +185,10 @@ export type SseEvent =
   | { type: "session_wrap"; session_id: string; payload: Record<string, unknown> }
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
-  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; own_answer?: string | null; action: string }>; generate_docs?: boolean; docs_reason?: string | null } }
+  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; own_answer?: string | null; action: string }>; generate_docs?: boolean; docs_reason?: string | null; pending_reconsiders?: string[] } }
   | { type: "chat_message_added"; session_id: string; payload: { node_id: string; chat_id: string; message: ChatMessage; seq?: number } }
   | { type: "chat_proposals_staged"; session_id: string; payload: { node_id: string; proposals: PendingProposal[] } }
   | { type: "chat_accepted"; session_id: string; payload: { node_id: string; chat_id: string; outcome: ChatOutcome | null; redirect_branch_id?: string | null } }
   | { type: "chat_closed"; session_id: string; payload: { node_id: string; chat_id: string } }
+  | { type: "node_reconsider_marked"; session_id: string; payload: { node_id: string; reconsider_marked: "unmarked" | "marked" | "seen"; reconsider_queue: string[] } }
   | { type: "hook_event"; session_id: string; payload: HookTrace & { grill_node_id?: string | null; grill_session_id?: string | null } };

@@ -10,7 +10,8 @@ export type ActionKind =
   | "continue_grill"
   | "chat_user_msg"
   | "chat_accept"
-  | "chat_close";
+  | "chat_close"
+  | "mark_reconsider";
 
 export interface ActionOpts {
   // plural pick set for action=next (radio = length 1, multi = ≥1)

@@ -100,6 +100,14 @@ export function SessionProvider({ sid, children }: Props) {
         case "chat_closed":
           d({ type: "chat_closed", node_id: ev.payload.node_id });
           break;
+        case "node_reconsider_marked":
+          d({
+            type: "node_reconsider_marked",
+            node_id: ev.payload.node_id,
+            reconsider_marked: ev.payload.reconsider_marked,
+            reconsider_queue: ev.payload.reconsider_queue,
+          });
+          break;
         // hook_event, session_list, session_deleted, hello, ping → ignored per-session
         default:
           break;
