@@ -698,12 +698,15 @@ class Store:
         node = s.nodes.get(node_id)
         if not node:
             return False, "not_found"
-        if not node.is_flushed:
-            return False, "node_not_committed"
+        # Order matters: summary/implicit gates come first so the correct
+        # error string surfaces (implicit nodes are never flushed by design;
+        # if is_flushed ran first it would shadow with node_not_committed).
         if node.kind == "summary":
             return False, "summary_node"
         if node.implicit:
             return False, "implicit_node"
+        if not node.is_flushed:
+            return False, "node_not_committed"
         # idempotent re-click — already marked / seen stays put
         if node.reconsider_marked in ("marked", "seen"):
             return True, None
