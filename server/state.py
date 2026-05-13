@@ -362,6 +362,10 @@ class Store:
                 "node_id": node_id,
                 "seq": seq,
                 "actions": [a.model_dump() for a in pending],
+                # reconsider queue snapshot — lets Claude see pending marks
+                # on every normal commit wake without an extra
+                # get_session_snapshot round-trip. See ADR-0009.
+                "pending_reconsiders": list(s.reconsider_queue),
             }
             if node.kind == "summary":
                 payload["generate_docs"] = node.generate_docs
@@ -637,6 +641,91 @@ class Store:
             )
 
         return None
+
+    # ---- reconsider mark (🚩) ----
+    def mark_node_reconsider(
+        self, sid: str, node_id: str
+    ) -> tuple[bool, Optional[str]]:
+        """Flag a committed decision node for re-grilling. Returns (ok, err).
+
+        Idempotent on re-click of an already-marked node (no-op). Excludes
+        un-flushed (still-pending), summary, and implicit nodes. Persists +
+        broadcasts node_reconsider_marked SSE on success. No buffer; the
+        action is terminal-class but doesn't participate in click-flush.
+
+        See ADR-0009.
+        """
+        s = self.sessions.get(sid)
+        if not s:
+            return False, "not_found"
+        if s.status == "ended":
+            return False, "session_ended"
+        node = s.nodes.get(node_id)
+        if not node:
+            return False, "not_found"
+        if not node.is_flushed:
+            return False, "node_not_committed"
+        if node.kind == "summary":
+            return False, "summary_node"
+        if node.implicit:
+            return False, "implicit_node"
+        # idempotent re-click — already marked / seen stays put
+        if node.reconsider_marked in ("marked", "seen"):
+            return True, None
+        node.reconsider_marked = "marked"
+        if node_id not in s.reconsider_queue:
+            s.reconsider_queue.append(node_id)
+        self._persist(s)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(
+                self.broadcast(
+                    sid,
+                    {
+                        "type": "node_reconsider_marked",
+                        "session_id": sid,
+                        "payload": {
+                            "node_id": node_id,
+                            "reconsider_marked": node.reconsider_marked,
+                            "reconsider_queue": list(s.reconsider_queue),
+                        },
+                    },
+                )
+            )
+        except RuntimeError:
+            pass
+        return True, None
+
+    def confirm_node_reconsider_seen(self, sid: str, node_id: str) -> bool:
+        """Flip marked → seen. Called when the shim confirms it emitted the
+        channel notification. Idempotent: no-op if state isn't 'marked'."""
+        s = self.sessions.get(sid)
+        if not s:
+            return False
+        node = s.nodes.get(node_id)
+        if not node or node.reconsider_marked != "marked":
+            return False
+        node.reconsider_marked = "seen"
+        self._persist(s)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(
+                self.broadcast(
+                    sid,
+                    {
+                        "type": "node_reconsider_marked",
+                        "session_id": sid,
+                        "payload": {
+                            "node_id": node_id,
+                            "reconsider_marked": node.reconsider_marked,
+                            "reconsider_queue": list(s.reconsider_queue),
+                        },
+                    },
+                )
+            )
+        except RuntimeError:
+            pass
+        return True
 
     # ---- inline-chat: transcript + proposal + accept/close ----
     def append_chat_message(

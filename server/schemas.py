@@ -133,6 +133,11 @@ class Node(BaseModel):
     pending_actions: list["AskBranchesResult"] = Field(default_factory=list)
     committed_actions: list["AskBranchesResult"] = Field(default_factory=list)
     is_flushed: bool = False
+    # reconsider mark (🚩) — user-flagged for re-grilling. State machine:
+    # unmarked → marked (yellow, just clicked) → seen (red, Claude got the
+    # channel notif). Cleared back to "unmarked" when Claude pushes the
+    # reconsider-fork node N'. See ADR-0009.
+    reconsider_marked: Literal["unmarked", "marked", "seen"] = "unmarked"
 
 
 # ---- session ----
@@ -201,6 +206,13 @@ class Session(BaseModel):
     # node_committed SSE + channel notif so the skill can detect gaps
     # (snapshot-on-wake fallback when seq jumps non-contiguously)
     next_seq: int = 0
+    # reconsider queue — node_ids the user has flagged via 🚩 that Claude
+    # has not yet re-surfaced as fork nodes. Ordered by mark time (server
+    # append). Claude picks ordering per-case (no fixed FIFO/LIFO rule).
+    # Drained when Claude pushes a present_branches with parent_branch_id
+    # pointing at a synth "reconsider-fork edge" Branch on the marked node.
+    # See ADR-0009.
+    reconsider_queue: list[str] = Field(default_factory=list)
 
 
 # ---- SSE outbound events (server -> GUI) ----
@@ -259,6 +271,7 @@ class GuiAction(BaseModel):
         "next",
         "stop_here", "create_plan", "implement_now", "continue_grill",
         "chat_user_msg", "chat_accept", "chat_close",
+        "mark_reconsider",
     ]
 
 

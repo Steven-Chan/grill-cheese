@@ -28,6 +28,7 @@ from .hooks import (
 from .setup_probes import setup_status
 from .internal_dispatch import (
     internal_notify_endpoint,
+    internal_reconsider_seen_endpoint,
     internal_shortcut_endpoint,
     internal_tool_endpoint,
 )
@@ -127,6 +128,7 @@ routes = [
     Route("/internal/tool/{name}", internal_tool_endpoint, methods=["POST"]),
     Route("/internal/telemetry/notify", internal_notify_endpoint, methods=["POST"]),
     Route("/internal/telemetry/shortcut", internal_shortcut_endpoint, methods=["POST"]),
+    Route("/internal/reconsider/seen", internal_reconsider_seen_endpoint, methods=["POST"]),
     Mount("/mcp/", app=_mcp_router),
     *_spa_routes(),
 ]

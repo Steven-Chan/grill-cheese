@@ -97,6 +97,22 @@ async def internal_notify_endpoint(request: Request) -> Response:
     return JSONResponse({"ok": True})
 
 
+async def internal_reconsider_seen_endpoint(request: Request) -> Response:
+    """POST {session_id, node_id} from shim — flips reconsider_marked
+    state from 'marked' to 'seen' once the shim has delivered the
+    node_reconsider_marked channel notification. Idempotent. See ADR-0009."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    sid = body.get("session_id") or ""
+    nid = body.get("node_id") or ""
+    if not sid or not nid:
+        return JSONResponse({"error": "missing session_id/node_id"}, status_code=400)
+    store.confirm_node_reconsider_seen(sid, nid)
+    return JSONResponse({"ok": True})
+
+
 async def internal_shortcut_endpoint(request: Request) -> Response:
     """POST {session_id, node_id, shortcut} from GUI — log a shortcut click.
 

@@ -91,6 +91,18 @@ async def actions_endpoint(request: Request) -> Response:
     if action.action in ("chat_user_msg", "chat_accept", "chat_close"):
         return await _handle_chat_action(action)
 
+    # reconsider mark (🚩) — terminal-class but doesn't enter the click
+    # buffer. Mutates node.reconsider_marked + session.reconsider_queue,
+    # broadcasts node_reconsider_marked SSE. See ADR-0009.
+    if action.action == "mark_reconsider":
+        ok, err = store.mark_node_reconsider(action.session_id, action.node_id)
+        if not ok:
+            return JSONResponse(
+                {"ok": False, "err": err or "mark_failed"},
+                status_code=400 if err in ("session_ended", "node_not_committed", "summary_node", "implicit_node") else 404,
+            )
+        return JSONResponse({"ok": True})
+
     if store.is_flushed(action.node_id):
         return JSONResponse(
             {"ok": False, "err": "node locked"}, status_code=409
