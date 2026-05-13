@@ -554,10 +554,15 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   /* Clip the off-viewport translateX of exiting/entering slots so the
-     swap doesn't push the page into horizontal scroll. The small
-     filter:blur halo at the slot edges (≤4px) is also clipped — fair
-     tradeoff vs a viewport-wide layout shift. */
+     swap doesn't push the page into horizontal scroll. */
   overflow: hidden;
+  /* Extend the clip region into `.gc-page`'s 24px padding so an entering
+     slot at `translateX(±24px)` slides in fully visible — without this
+     the card's leading edge is sliced at the stage's own left/right.
+     Negative margin pulls the box outward; matching padding keeps the
+     inner content column aligned with the card's settled position. */
+  margin: 0 -24px;
+  padding: 0 24px;
 }
 .gc-bigcard-slot {
   grid-column: 1;
