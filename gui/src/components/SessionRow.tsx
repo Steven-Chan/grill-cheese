@@ -39,7 +39,7 @@ export function SessionRow({
           {variant === "ended" && <ScoreChip score={meta.score} count={meta.decision_count} />}
         </span>
         <span className="gc-session-meta">
-          {meta.id.slice(0, 6)} · {relTime(meta.started_at)}
+          {relTime(meta.started_at)}
         </span>
       </button>
       <button
