@@ -55,6 +55,7 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
      `chosen_branch_ids` / `chosen_branch_labels` are PARALLEL LISTS (same length, same order). Single-mode = length 1; multi-mode = length ≥ 1; may also include a synth `user_authored` branch when the user typed Own Answer text alongside picks.
      `own_answer` echoes the user's typed text when the synth branch came from the Own Answer textarea. (Non-blocking chat redesign — ADR-0001 — removed the `chat` action.)
    - **Summary-node payloads also carry `generate_docs: bool` and `docs_reason: string|null`** at the outer level (alongside `actions`, NOT per-action). These echo back the flag/reason you set on `present_summary` so you don't need a snapshot round-trip to decide plan shape on `create_plan`. Absent on non-summary `node_committed` events.
+   - **`pending_reconsiders: list[str]`** at the outer level on every `node_committed` payload — snapshot of `Session.reconsider_queue` (node_ids the user has 🚩-flagged for re-grilling but you haven't yet re-surfaced). Empty most of the time. See "Reconsider marks" section.
    - `seq` is a per-session monotonic counter. Track `last_seen_seq` mentally. If `seq == last_seen_seq + 1` (or this is the first wake): act on `actions` directly. If `seq` jumped (server restart, missed events): call `get_session_snapshot(session_id)`, replay any flushed nodes you missed, then act.
 
    **B. session_wrap wake (toolbar Wrap-up):**
@@ -95,6 +96,18 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
      - `outcome == "refine"` → no parent ids. Node stays interactive (chat is non-blocking; the card was never locked) — the option set was sharpened. Drill off one of the new branches OR push a follow-up question. The user can also commit normally via `next`; if they do, you'll get a regular shape-A wake.
    - `resolve` outcome removed in ADR-0001. Chat no longer commits the question; the user picks a branch or types Own Answer.
    - No `seq` — not on the per-session monotonic counter (apply_chat_result mutates outside the action-buffer flush path).
+
+   **E. node-reconsider-marked wake (GUI 🚩 clicked):**
+   ```
+   <channel source="grill-cheese" session_id="ab12cd34" node_id="n2" kind="node_reconsider_marked">
+   {"type": "node_reconsider_marked", "session_id": "ab12cd34", "node_id": "n2"}
+   </channel>
+   ```
+   - Means: user clicked **🚩** on a past committed decision node to flag it for re-grilling. Recognise by top-level `type == "node_reconsider_marked"`.
+   - **DO NOT PUSH A DECISION NODE ON THIS WAKE.** Internalize the mark silently and END TURN immediately. The user is mid-grill on a different (frontier) question — pushing now would interrupt them, which the design explicitly forbids (ADR-0009).
+   - Track the marked `node_id` in your working memory. The mark also lands in `session.reconsider_queue` (visible via `get_session_snapshot` or as `pending_reconsiders` on the next normal `node_committed` wake).
+   - Act on the mark during the next normal commit wake — see "Reconsider marks" section below for re-surface mechanics.
+   - No `seq` — not on the per-session monotonic counter.
 
 5. **Read the batch as a narrative and decide what to ask next.**
 
@@ -240,6 +253,86 @@ post_chat_message(
 ### `apply_chat_result` is an escape hatch only
 
 The tool still exists but **MUST NOT** be called from the inline-chat flow. It bypasses the staged-proposal Accept gate. Reserved for crash recovery / explicit manual override only.
+
+## Reconsider marks (🚩)
+
+The user can click 🚩 on any committed decision node (in the history sidebar, or on the active card when locked) to flag it for re-grilling without breaking the forward-only journey. See ADR-0009.
+
+### Mark-wake (shape E)
+
+Lands when the user clicks 🚩. Payload carries `node_id` only — no reason text. **You DO NOT push a decision node on this wake.** Internalize silently and END TURN. The current frontier question is still live for the user; pushing now would interrupt them.
+
+### Discovering pending marks
+
+Two paths, pick the cheapest:
+- **Piggy-back path (preferred):** every `node_committed` channel block now carries `pending_reconsiders: [node_id, ...]` — the current `Session.reconsider_queue` snapshot. Read it on normal commit wakes; no extra tool call.
+- **Snapshot fallback:** `get_session_snapshot(session_id)` returns `Session.reconsider_queue` plus per-node `reconsider_marked` state if you need full detail.
+
+### When to re-surface
+
+Hard rules:
+- **Never NOW.** Don't react on the mark-wake. Wait for the next normal commit wake.
+- **Earliest = next commit.** After the current frontier question commits, you may re-surface the mark immediately if it makes sense.
+- **Latest = before `present_summary`.** Try to drain the queue before any summary lands.
+- **Don't interrupt drilling.** If you're in the middle of a productive sub-chain, finish it; surface the mark when the chain naturally pauses.
+
+Ordering when multiple marks queued: pure agent-judgment per case. Depth-first (shallowest mark first) is often the right default — resolving a foundational decision may invalidate downstream marks automatically — but trust your read of the chain.
+
+### Re-surface push template
+
+When you decide to re-surface a marked `node_id = N`:
+
+```
+# Read N from the snapshot to get the original question text.
+snap = get_session_snapshot(session_id)
+N = snap["nodes"][marked_node_id]
+
+# 1. Append a synth "reconsider-fork edge" Branch to N.branches
+#    — the GUI/server doesn't synthesize this; YOU compose the new
+#    node so its parent_branch_id points back into N via this edge.
+#    The branch is conceptually part of N.branches but lives on the
+#    new node's parent_branch_id slot. The server treats any branch
+#    whose rationale starts with "reconsider-fork edge" specially
+#    (decision-map 🚩 badge, history sidebar fade rule).
+#
+#    In practice: you don't need to mutate N directly — pass a fresh
+#    branch_id you mint here as parent_branch_id, and the server's
+#    add_node helper will create the wiring. (If you find that's not
+#    yet wired, fall back to: pass parent_node_id=N["id"] alone and
+#    do not specify parent_branch_id; the canvas will still render a
+#    fork off N. The 🚩 badge will key on N.reconsider_marked=="seen".)
+
+present_branches(
+  session_id=session_id,
+  parent_node_id=N["id"],
+  question=N["question"],          # SAME question text as the marked node
+  reasoning="Re-grilling after 🚩 mark — re-evaluating with what we've learned since.",
+  branches=[
+    # refreshed branches informed by everything since the mark.
+    # The original branches on N are still on the map (abandoned);
+    # you may keep some, drop some, add new ones.
+    {"label": "...", "rationale": "...", "is_recommended": True},
+    {"label": "...", "rationale": "..."},
+    # ALWAYS include a Never mind branch — that is the dismissal
+    # mechanism for the user (no proactive un-mark UI).
+    {"label": "Never mind", "rationale": "Dismiss this reconsider; the original pick stands.", "is_recommended": False},
+  ],
+  depth=N.get("depth", 0) + 1,
+)
+```
+
+The server removes `node_id` from `session.reconsider_queue` when a new node lands with `parent_node_id == node_id` (or when you explicitly call a future helper). Until then it stays queued.
+
+### After N' commits
+
+When the user picks a branch on the re-surfaced node `N'`:
+
+- **`"Never mind"` picked** → user dismissed the reconsider. Continue the main grill — drill down or move sideways as usual.
+- **Any other branch picked** → user has chosen a new path. The descendants of N's original branch are now "abandoned" (faded in the GUI history). Judge per descendant which downstream questions are still live given the new pick; re-push only those (parented to N's new path). Skip descendants the new pick makes irrelevant.
+
+### Wrap-up with pending marks
+
+If `session_wrap` fires while `reconsider_queue` is non-empty: the server still lets `present_summary` proceed. The summary card carries a warning chip ("N marks unaddressed"); the user can pick `continue_grill` to drain them or proceed to a terminal verdict ignoring them. **You should still try** to drain the queue before composing the summary — push the queued marks one by one if there's time. If the user wraps anyway, respect it.
 
 ## Ending
 
