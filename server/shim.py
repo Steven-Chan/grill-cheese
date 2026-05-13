@@ -210,6 +210,10 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
     # wake to check for queued marks). See ADR-0009.
     if "pending_reconsiders" in payload:
         body["pending_reconsiders"] = payload["pending_reconsiders"]
+    # Parked slot hints: forward so main can route sideways at wake time
+    # without holding payloads through compaction. See ADR-0010.
+    if "parked_slots" in payload:
+        body["parked_slots"] = payload["parked_slots"]
     meta = {
         "session_id": str(session_id),
         "node_id": str(node_id),

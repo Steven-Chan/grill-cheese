@@ -34,6 +34,9 @@ _ALLOWLISTED_AFTER_PUSH = {
     # inline-chat: chat replies fire after a chat_message channel wake, not
     # a push wake; exempt from <100ms violation flag.
     "post_chat_message",
+    # speculation (ADR-0010): present_parked is a sideways-consume push and
+    # can legitimately fire shortly after a prior push on the very next wake.
+    "present_parked",
 }
 
 VIOLATION_GAP_MS = 100.0
@@ -116,6 +119,52 @@ def log_shortcut_prefill(session_id: str, node_id: str, shortcut: str) -> None:
             "ts": time.time(),
         },
     )
+
+
+def log_parked_enqueue(session_id: str, slot_count: int, k_used: int) -> None:
+    """Speculator teammate refreshed the parked queue. ADR-0010."""
+    _append(
+        session_id,
+        {
+            "type": "parked_enqueue",
+            "slot_count": slot_count,
+            "K_used": k_used,
+            "ts": time.time(),
+        },
+    )
+
+
+def log_parked_consume(session_id: str, slot_id: str, age_ms: float) -> None:
+    """Main dequeued a parked slot via present_parked. ADR-0010."""
+    _append(
+        session_id,
+        {
+            "type": "parked_consume",
+            "slot_id": slot_id,
+            "age_ms": round(age_ms, 1),
+            "ts": time.time(),
+        },
+    )
+
+
+def log_parked_evict(session_id: str, slot_id: str, reason: str) -> None:
+    """Parked slot dropped without consume (`replaced` or `session_end`)."""
+    _append(
+        session_id,
+        {
+            "type": "parked_evict",
+            "slot_id": slot_id,
+            "reason": reason,
+            "ts": time.time(),
+        },
+    )
+
+
+def log_teammate_health(session_id: str, kind: str, **meta: Any) -> None:
+    """Speculator teammate liveness: spawned / ping / failure."""
+    rec: dict[str, Any] = {"type": "teammate_health", "kind": kind, "ts": time.time()}
+    rec.update(meta)
+    _append(session_id, rec)
 
 
 def forget_session(session_id: str) -> None:

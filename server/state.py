@@ -23,6 +23,7 @@ from .schemas import (
     GuiAction,
     HookEvent,
     Node,
+    ParkedSlot,
     PendingProposal,
     PerformanceEntry,
     Session,
@@ -388,6 +389,16 @@ class Store:
                 # on every normal commit wake without an extra
                 # get_session_snapshot round-trip. See ADR-0009.
                 "pending_reconsiders": list(s.reconsider_queue),
+                # parked queue hint — slot_id + one-line question per parked
+                # slot, so main can route sideways at wake time without
+                # holding payloads through compaction. See ADR-0010.
+                "parked_slots": [
+                    {
+                        "slot_id": p.slot_id,
+                        "question_oneline": _oneline(p.question),
+                    }
+                    for p in s.parked_queue
+                ],
             }
             if node.kind == "summary":
                 payload["generate_docs"] = node.generate_docs
@@ -657,6 +668,92 @@ class Store:
             )
 
         return None
+
+    # ---- speculation queue (ADR-0010) ----
+    def enqueue_speculation(
+        self, sid: str, slots: list[ParkedSlot]
+    ) -> tuple[bool, Optional[str]]:
+        """Replace session.parked_queue wholesale with new slots.
+
+        Teammate-driven refresh is whole-queue replace, not incremental — the
+        speculator regenerates against the latest commit each turn. Returns
+        (ok, err). Broadcasts parked_queue_updated SSE on success.
+        """
+        s = self.sessions.get(sid)
+        if s is None:
+            return False, "no such session"
+        if s.status == "ended":
+            return False, "session_ended"
+        # Mint slot_ids if teammate left them blank (Pydantic default fires
+        # only at construction time — server is the authority for ids).
+        now = time.time()
+        for slot in slots:
+            if not slot.slot_id:
+                slot.slot_id = uuid.uuid4().hex[:8]
+            slot.enqueued_at = now
+        s.parked_queue = list(slots)
+        self._persist(s)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(
+                self.broadcast(
+                    sid,
+                    {
+                        "type": "parked_queue_updated",
+                        "session_id": sid,
+                        "payload": {
+                            "parked_slots": [
+                                {"slot_id": p.slot_id, "question_oneline": _oneline(p.question)}
+                                for p in s.parked_queue
+                            ],
+                        },
+                    },
+                )
+            )
+        except RuntimeError:
+            pass
+        return True, None
+
+    def consume_parked(
+        self, sid: str, slot_id: str
+    ) -> tuple[Optional[ParkedSlot], Optional[str]]:
+        """Atomically pop a parked slot by id. Race-safe against enqueue
+        replacing the queue: if slot vanished, returns (None, "slot_not_found")
+        so the caller can fall back to live-gen.
+        """
+        s = self.sessions.get(sid)
+        if s is None:
+            return None, "no such session"
+        if s.status == "ended":
+            return None, "session_ended"
+        idx = next(
+            (i for i, p in enumerate(s.parked_queue) if p.slot_id == slot_id),
+            -1,
+        )
+        if idx < 0:
+            return None, "slot_not_found"
+        slot = s.parked_queue.pop(idx)
+        self._persist(s)
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(
+                self.broadcast(
+                    sid,
+                    {
+                        "type": "parked_queue_updated",
+                        "session_id": sid,
+                        "payload": {
+                            "parked_slots": [
+                                {"slot_id": p.slot_id, "question_oneline": _oneline(p.question)}
+                                for p in s.parked_queue
+                            ],
+                        },
+                    },
+                )
+            )
+        except RuntimeError:
+            pass
+        return slot, None
 
     # ---- reconsider mark (🚩) ----
     def mark_node_reconsider(
@@ -1261,6 +1358,15 @@ class Store:
                 q.put_nowait(ev)
             except asyncio.QueueFull:
                 pass
+
+
+def _oneline(s: str) -> str:
+    """First non-empty line of s, truncated to 80 chars. Used for parked-slot
+    hints — main reads it to route sideways without seeing the full body."""
+    if not s:
+        return ""
+    line = next((ln.strip() for ln in s.splitlines() if ln.strip()), "")
+    return line[:80]
 
 
 def _compute_recommendation_score(node: Node) -> Optional[float]:

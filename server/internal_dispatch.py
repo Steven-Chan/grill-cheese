@@ -39,6 +39,9 @@ _TOOL_FUNCS = {
     "end_session": mcp_app.end_session,
     "get_session_snapshot": mcp_app.get_session_snapshot,
     "get_retro_input": mcp_app.get_retro_input,
+    # speculation (ADR-0010): teammate-only enqueue, main-only consume.
+    "enqueue_speculation": mcp_app.enqueue_speculation,
+    "present_parked": mcp_app.present_parked,
 }
 
 

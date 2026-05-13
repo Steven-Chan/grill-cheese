@@ -10,9 +10,15 @@ from .schemas import (
     AskBranchesResult,
     Branch,
     ChatOps,
+    ParkedSlot,
 )
 from .state import store
-from .telemetry import forget_session, log_push
+from .telemetry import (
+    forget_session,
+    log_parked_consume,
+    log_parked_enqueue,
+    log_push,
+)
 
 TITLE_MAX = 80
 
@@ -244,6 +250,86 @@ async def present_summary(
 # See server/shim.py for the stdio bridge that emits them. ask_branches was
 # also removed earlier — single-call wrappers around push+wait re-create the
 # duplicate-node bug on transport retries.
+
+
+@mcp.tool()
+async def enqueue_speculation(
+    session_id: str,
+    slots: list[dict],
+) -> dict:
+    """**Speculator teammate only.** Replace the session's parked_queue.
+
+    Each slot is `{slot_id?, question, reasoning?, branches: [...], multi_select?}`.
+    `branches` items are the same shape `present_branches` accepts —
+    `{label, rationale?, is_recommended?}`. `slot_id` is optional; server
+    mints one when absent. Whole queue is replaced atomically (no
+    incremental append). 1–5 slots per call (caller-sized).
+
+    Main Claude **never** calls this — it lives in the teammate's tool
+    set. Main reads the per-commit `parked_slots` hint and dequeues via
+    `present_parked`.
+
+    See ADR-0010.
+    """
+    try:
+        parsed = [ParkedSlot(**s) for s in slots]
+    except Exception as e:
+        return {"ok": False, "err": f"bad slot: {e}"}
+    ok, err = store.enqueue_speculation(session_id, parsed)
+    if not ok:
+        return {"ok": False, "err": err or "enqueue failed"}
+    log_parked_enqueue(session_id, slot_count=len(parsed), k_used=len(parsed))
+    return {"ok": True, "count": len(parsed)}
+
+
+@mcp.tool()
+async def present_parked(
+    session_id: str,
+    slot_id: str,
+    progress: float,
+) -> dict:
+    """**Main Claude only.** Promote a parked slot to the active decision node.
+
+    Server pops the slot from `parked_queue`, builds the node, broadcasts
+    `node_added`. Equivalent to `present_branches` but skips generation —
+    the teammate has already composed the question + branches.
+
+    `progress` is **required** here (unlike enqueue): main re-estimates
+    honestly at consume time (ADR-0007 honest-shrink preserved on sideways
+    consume). Server clamps to [0,1].
+
+    If the slot is gone (queue replaced concurrently), returns
+    `{ok: false, err: "slot_not_found"}` — main should fall back to
+    `present_branches`. END TURN on success (same rule as
+    `present_branches`).
+    """
+    slot, err = store.consume_parked(session_id, slot_id)
+    if err is not None or slot is None:
+        return {"ok": False, "err": err or "consume failed"}
+    age_ms = ((time.time() - slot.enqueued_at) * 1000.0) if slot.enqueued_at else 0.0
+    log_parked_consume(session_id, slot_id, age_ms)
+    node = store.add_node(
+        sid=session_id,
+        question=slot.question,
+        reasoning=slot.reasoning,
+        branches=list(slot.branches),
+        parent_node_id=None,
+        parent_branch_id=None,
+        depth=0,
+        multi_select=slot.multi_select,
+        progress=progress,
+    )
+    await store.broadcast(
+        session_id,
+        {
+            "type": "node_added",
+            "session_id": session_id,
+            "payload": node.model_dump(),
+        },
+    )
+    await store.broadcast_session_list()
+    log_push(session_id, node.id, "present_parked")
+    return {"ok": True, "node_id": node.id, "instruction": END_TURN_INSTRUCTION}
 
 
 @mcp.tool()

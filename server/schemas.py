@@ -24,6 +24,30 @@ class Branch(BaseModel):
 
 
 NodeKind = Literal["decision", "summary"]
+
+
+# ---- speculation (ADR-0010) ----
+# Parked slot: full payload the speculator teammate enqueues so main can
+# dequeue-and-promote in one tool call without re-generating. NO progress
+# field — main supplies it at present_parked time (honest-shrink, ADR-0007).
+class ParkedSlot(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    slot_id: str = Field(default_factory=_bid)
+    question: str
+    reasoning: str = ""
+    branches: list[Branch] = Field(default_factory=list)
+    multi_select: bool = False
+    # server-stamped enqueue timestamp — drives parked_consume age_ms metric.
+    # Optional so the teammate doesn't have to mint it.
+    enqueued_at: Optional[float] = None
+
+
+# One-line hint forwarded in node_committed channel payloads so main knows
+# what's queued without holding full bodies through compaction.
+class ParkedSlotHint(BaseModel):
+    slot_id: str
+    question_oneline: str
 # `resolve` outcome dropped — see docs/adr/0001-non-blocking-chat.md.
 # Legacy session JSONs with outcome="resolve" rehydrate via extra="ignore".
 ChatOutcome = Literal["refine", "redirect"]
@@ -213,6 +237,11 @@ class Session(BaseModel):
     # pointing at a synth "reconsider-fork edge" Branch on the marked node.
     # See ADR-0009.
     reconsider_queue: list[str] = Field(default_factory=list)
+    # speculative sideways queue — parked slots the speculator teammate has
+    # enqueued. Main dequeues one via present_parked when its commit-wake
+    # routing picks sideways over drill-down. Wholesale-replaced on each
+    # enqueue_speculation call. Cleared on session end. See ADR-0010.
+    parked_queue: list[ParkedSlot] = Field(default_factory=list)
 
 
 # ---- SSE outbound events (server -> GUI) ----
@@ -336,6 +365,19 @@ class PerformanceEntry(BaseModel):
     # Mirrors Session.kind so the GUI can tag retro rows differently
     # without re-reading the session JSON. None for regular grills.
     kind: Optional[SessionKind] = None
+
+
+# ---- speculation tool args (ADR-0010) ----
+
+class EnqueueSpeculationArgs(BaseModel):
+    session_id: str
+    slots: list[ParkedSlot]
+
+
+class PresentParkedArgs(BaseModel):
+    session_id: str
+    slot_id: str
+    progress: float
 
 
 # ---- claude code hook payload (subset we care about) ----
