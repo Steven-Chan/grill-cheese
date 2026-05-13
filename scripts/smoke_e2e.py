@@ -22,7 +22,7 @@ import asyncio
 import uuid
 
 from server.state import store
-from server.schemas import Branch, ChatOps, GuiAction
+from server.schemas import Branch, ChatOps, GuiAction, ParkedSlot
 
 
 def push_click(
@@ -303,6 +303,74 @@ async def main():
         raise AssertionError("action=chat should no longer validate")
     except Exception:
         print("OK — action=chat rejected by schema literal (ADR-0001)")
+
+    # ---- speculation queue (ADR-0010) ----
+    ok, err = store.enqueue_speculation(
+        sid,
+        [
+            ParkedSlot(
+                question="Sideways Q1?",
+                reasoning="parked by speculator",
+                branches=[
+                    Branch(id="p1", label="opt-a", is_recommended=True),
+                    Branch(id="p2", label="opt-b"),
+                ],
+            ),
+            ParkedSlot(
+                question="Sideways Q2?",
+                branches=[Branch(id="q1", label="only")],
+            ),
+        ],
+    )
+    assert ok and err is None, f"enqueue_speculation failed: {err}"
+    s_check = store.get(sid)
+    assert s_check is not None
+    assert len(s_check.parked_queue) == 2, "queue must have 2 slots"
+    assert all(p.enqueued_at is not None for p in s_check.parked_queue), \
+        "server must stamp enqueued_at"
+    slot_id_consume = s_check.parked_queue[0].slot_id
+    print(f"OK — enqueue_speculation parked {len(s_check.parked_queue)} slots")
+
+    # 13a. consume_parked happy path
+    consumed, err2 = store.consume_parked(sid, slot_id_consume)
+    assert consumed is not None and err2 is None
+    assert consumed.slot_id == slot_id_consume
+    assert len(s_check.parked_queue) == 1, "consume must pop one slot"
+    print(f"OK — consume_parked popped slot={slot_id_consume[:8]}")
+
+    # 13b. consume again → slot_not_found (race-safety)
+    again, err3 = store.consume_parked(sid, slot_id_consume)
+    assert again is None and err3 == "slot_not_found"
+    print("OK — consume_parked returns slot_not_found on race / missing slot")
+
+    # 13c. enqueue replace: full queue swap drops the survivor
+    survivor_id = s_check.parked_queue[0].slot_id
+    ok2, err4 = store.enqueue_speculation(
+        sid,
+        [ParkedSlot(question="Fresh round", branches=[Branch(id="f1", label="ok")])],
+    )
+    assert ok2 and err4 is None
+    assert len(s_check.parked_queue) == 1
+    assert s_check.parked_queue[0].slot_id != survivor_id, "replace must drop prior slots"
+    print("OK — enqueue_speculation wholesale-replaces prior queue")
+
+    # 13d. present_parked MCP tool dequeues + emits node
+    from server.mcp_app import present_parked as _present_parked
+    fresh_id = s_check.parked_queue[0].slot_id
+    res = await _present_parked(session_id=sid, slot_id=fresh_id, progress=0.42)
+    assert res.get("ok") is True, f"present_parked failed: {res}"
+    promoted_nid = res.get("node_id")
+    assert promoted_nid and promoted_nid in s_check.nodes
+    promoted = s_check.nodes[promoted_nid]
+    assert promoted.question == "Fresh round"
+    assert promoted.progress == 0.42, "main-supplied progress must land on node"
+    assert len(s_check.parked_queue) == 0, "queue empty after consume"
+    print(f"OK — present_parked promoted slot to node={promoted_nid}")
+
+    # 13e. present_parked on missing slot → ok:false
+    miss = await _present_parked(session_id=sid, slot_id="ffffffff", progress=0.5)
+    assert miss.get("ok") is False and "slot_not_found" in (miss.get("err") or "")
+    print("OK — present_parked surfaces slot_not_found cleanly")
 
     print("\nALL SMOKE TESTS PASSED")
 

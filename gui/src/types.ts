@@ -174,6 +174,12 @@ export interface PerformanceEntry {
   kind?: SessionKind | null;
 }
 
+// Speculation (ADR-0010) — wire types
+export interface ParkedSlotHint {
+  slot_id: string;
+  question_oneline: string;
+}
+
 export type SseEvent =
   | { type: "hello"; session_id: string; payload: Record<string, unknown> }
   | { type: "ping"; session_id: string; payload: Record<string, unknown> }
@@ -185,7 +191,8 @@ export type SseEvent =
   | { type: "session_wrap"; session_id: string; payload: Record<string, unknown> }
   | { type: "node_added"; session_id: string; payload: DecisionNode }
   | { type: "node_updated"; session_id: string; payload: DecisionNode }
-  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; own_answer?: string | null; action: string }>; generate_docs?: boolean; docs_reason?: string | null; pending_reconsiders?: string[] } }
+  | { type: "node_committed"; session_id: string; payload: { node_id: string; seq: number; actions: Array<{ node_id: string; chosen_branch_ids?: string[] | null; chosen_branch_labels?: string[] | null; own_answer?: string | null; action: string }>; generate_docs?: boolean; docs_reason?: string | null; pending_reconsiders?: string[]; parked_slots?: ParkedSlotHint[] } }
+  | { type: "parked_queue_updated"; session_id: string; payload: { parked_slots: ParkedSlotHint[] } }
   | { type: "chat_message_added"; session_id: string; payload: { node_id: string; chat_id: string; message: ChatMessage; seq?: number } }
   | { type: "chat_proposals_staged"; session_id: string; payload: { node_id: string; proposals: PendingProposal[] } }
   | { type: "chat_accepted"; session_id: string; payload: { node_id: string; chat_id: string; outcome: ChatOutcome | null; redirect_branch_id?: string | null } }

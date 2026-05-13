@@ -129,6 +129,56 @@ The transport is **push-based**. After you push a question you END YOUR TURN. Th
 
    After pushing the next `present_branches`, END TURN again. The next channel wake will deliver the next action.
 
+## Speculator teammate (ADR-0010)
+
+A second persistent agent runs alongside the main grill loop. It generates **parked slots** — fully-composed candidate questions (with branches, rationales, recommendations) that main can dequeue-and-push in one tool call when the current commit-wake calls for a *sideways* move rather than a drill-down. Main never holds the parked payloads in its own context.
+
+### Lifecycle
+
+1. **Spawn at session start.** Right after `start_session`, fire one `Agent` call:
+   ```
+   Agent(
+     description="Speculative sideways queue worker",
+     subagent_type="general-purpose",
+     name="speculator-<session_id>",            # use the actual session_id
+     run_in_background=true,
+     prompt="<seed: brief + protocol contract — see below>",
+   )
+   ```
+   The teammate runs in its own context window for the rest of the session. Main only ever talks to it via `SendMessage(to="speculator-<session_id>", ...)`.
+
+2. **Trigger refresh on every push.** After every `present_branches` call and **before** END TURN, fire one `SendMessage`:
+   ```
+   SendMessage(to="speculator-<session_id>", prompt="Commit: <last user action>. Refresh queue.")
+   ```
+   Fire-and-forget. Do NOT wait for a reply. Then END TURN as usual.
+
+3. **Teammate enqueues.** The teammate composes 1–5 parked slots against the latest commit and calls `enqueue_speculation(session_id, slots=[...])`. Slots are wholesale-replaced on each refresh (not appended).
+
+### Routing decision tree (every commit-wake)
+
+When a normal `node_committed` wake lands, read `parked_slots` from the channel block:
+
+```
+parked_slots: [{slot_id: "abc12345", question_oneline: "Stripe, Paddle, or roll your own?"}, ...]
+```
+
+Then judge:
+
+- **Drill-down route (default):** the user's pick *dictates* the next question — go live. Compose branches fresh and call `present_branches(...)`. The queue is fallback, never default; preserve grill depth.
+- **Sideways route:** the user's pick *does not* dictate a follow-up AND a parked slot covers a different live brief decision. Call `present_parked(session_id, slot_id, progress=<honest re-estimate>)`. Server pops the slot and broadcasts the node. **Skip your own generation entirely.**
+- **Fallback:** if `parked_slots` is empty OR none match the live front, drill via `present_branches` as usual. No special crash handling — empty queue is the normal state on early wakes.
+
+END TURN discipline preserved on both paths (`present_parked` returns the same `instruction` field).
+
+### Hard rules
+
+- **NEVER call `enqueue_speculation` from main.** That tool is teammate-only. (If you find yourself wanting to, the routing decision is wrong — push via `present_branches` instead.)
+- **NEVER call `present_parked` while an active pending node is unanswered.** Same gate as `present_branches`: one open node at a time.
+- **`present_parked` slot_id MUST come from a recent `parked_slots` hint.** Don't reuse old slot_ids from compaction-stale memory; if `slot_not_found` lands, fall back to live `present_branches`.
+- **Re-estimate `progress` on `present_parked`.** Honest-shrink (ADR-0007) — the slot has no progress field; main is the authority.
+- **Fire `SendMessage(speculator-...)` after every push** unless the session is about to end (`present_summary` or terminal verdict landing). Skipping the trigger is fine — the queue just goes stale — but the cheap path is to keep it warm.
+
 ## Hard rules
 
 - **Always pass `project` to `start_session`.** Run the Bash detection snippet (see step 1) before calling `start_session`. The server requires a non-empty `project` and uses it to partition on-disk session files under `~/.grill-cheese/project-<project>/sessions/`. Empty `project` returns an error.

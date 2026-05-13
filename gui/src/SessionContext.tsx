@@ -108,6 +108,9 @@ export function SessionProvider({ sid, children }: Props) {
             reconsider_queue: ev.payload.reconsider_queue,
           });
           break;
+        case "parked_queue_updated":
+          d({ type: "parked_queue_updated", parked_slots: ev.payload.parked_slots });
+          break;
         // hook_event, session_list, session_deleted, hello, ping → ignored per-session
         default:
           break;

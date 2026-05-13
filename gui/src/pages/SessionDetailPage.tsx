@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { SessionProvider, useSession } from "../SessionContext";
 import { BriefBanner } from "../components/BriefBanner";
 import { BigCard } from "../components/BigCard";
+import { DevOverlay } from "../components/DevOverlay";
 import { FireAnimation } from "../components/FireAnimation";
 import { ProgressBar } from "../components/ProgressBar";
 import { ScoreChip } from "../components/ScoreChip";
@@ -35,6 +36,8 @@ function DetailShell() {
   const [wrappingUp, setWrappingUp] = useState(false);
   // null = follow live pending. set = pinned to a specific past node in BigCard slot.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // ADR-0010 speculation dev overlay — toggle from the 3-dots menu.
+  const [devOverlayOpen, setDevOverlayOpen] = useState(false);
 
   // chip (icon-only, always visible): fire iff Claude is being waited on,
   // otherwise cheese. Flipping back to fire on the next waiting edge is fine.
@@ -145,6 +148,8 @@ function DetailShell() {
               wrappingUp={wrappingUp}
               onWrapUp={onWrapUp}
               exportUrl={exportMarkdownUrl(state.sid)}
+              onToggleDevOverlay={() => setDevOverlayOpen((v) => !v)}
+              devOverlayOpen={devOverlayOpen}
             />
           </div>
         </div>
@@ -181,6 +186,7 @@ function DetailShell() {
           </button>
         </div>
       )}
+      {devOverlayOpen && <DevOverlay onClose={() => setDevOverlayOpen(false)} />}
       <div className="gc-detail-fab" aria-hidden="true">
         <FireAnimation size={48} state={chipMode} fireShrinkMs={200} />
       </div>
@@ -196,11 +202,15 @@ function HeaderMenu({
   wrappingUp,
   onWrapUp,
   exportUrl,
+  onToggleDevOverlay,
+  devOverlayOpen,
 }: {
   showWrapUp: boolean;
   wrappingUp: boolean;
   onWrapUp: () => void;
   exportUrl: string;
+  onToggleDevOverlay: () => void;
+  devOverlayOpen: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -261,6 +271,18 @@ function HeaderMenu({
           >
             export .md
           </a>
+          <button
+            type="button"
+            role="menuitem"
+            className="gc-menu-item"
+            onClick={() => {
+              setOpen(false);
+              onToggleDevOverlay();
+            }}
+            title="Toggle the speculation queue dev overlay (ADR-0010)"
+          >
+            {devOverlayOpen ? "Dev: hide speculation overlay" : "Dev: speculation overlay"}
+          </button>
         </div>
       )}
     </div>

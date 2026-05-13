@@ -31,6 +31,7 @@ export function openSse(sessionId: string | null, onEvent: (ev: SseEvent) => voi
     "node_added",
     "node_updated",
     "node_committed",
+    "parked_queue_updated",
     "chat_message_added",
     "chat_proposals_staged",
     "chat_accepted",

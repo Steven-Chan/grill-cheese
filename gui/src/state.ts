@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   CmuxInfo,
   DecisionNode,
+  ParkedSlotHint,
   PendingProposal,
   SessionMeta,
   SessionStatus,
@@ -31,6 +32,9 @@ export interface SessionState {
   // re-surfaced. Drives the summary-card warning chip. Mirrors
   // Session.reconsider_queue. See ADR-0009.
   reconsiderQueue: string[];
+  // Speculative sideways queue hints. Slot ids + one-line previews only,
+  // never full payloads. Drives the dev overlay. See ADR-0010.
+  parkedSlots: ParkedSlotHint[];
 }
 
 export type SessionAction =
@@ -45,7 +49,8 @@ export type SessionAction =
   | { type: "chat_message_added"; node_id: string; message: ChatMessage }
   | { type: "chat_proposals_staged"; node_id: string; proposals: PendingProposal[] }
   | { type: "chat_closed"; node_id: string }
-  | { type: "node_reconsider_marked"; node_id: string; reconsider_marked: "unmarked" | "marked" | "seen"; reconsider_queue: string[] };
+  | { type: "node_reconsider_marked"; node_id: string; reconsider_marked: "unmarked" | "marked" | "seen"; reconsider_queue: string[] }
+  | { type: "parked_queue_updated"; parked_slots: ParkedSlotHint[] };
 
 export interface Snapshot {
   id: string;
@@ -82,6 +87,7 @@ export function initialSessionState(sid: string): SessionState {
     wrapping: false,
     cmux: null,
     reconsiderQueue: [],
+    parkedSlots: [],
   };
 }
 
@@ -243,6 +249,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         reconsiderQueue: action.reconsider_queue,
       };
     }
+    case "parked_queue_updated":
+      return { ...state, parkedSlots: action.parked_slots };
     default:
       return state;
   }
