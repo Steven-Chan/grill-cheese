@@ -41,20 +41,30 @@ Source of truth for terminology. Read this before edits that touch the decision-
 
 ## Eventing
 
-- **Channel** — `notifications/claude/channel` JSON-RPC notification emitted by the stdio shim. Wakes Claude on `node_committed`, `chat_message_added` (user messages only), `chat_accepted`, and `session_wrap` events. Payload `seq` lets the skill detect gaps.
-- **SSE event** — internal pub/sub between server and GUI/shim. Types: `session_started`, `session_list`, `session_ended`, `session_deleted`, `session_wrap`, `node_added`, `node_updated`, `node_committed`, `chat_message_added`, `chat_proposals_staged`, `chat_accepted`, `chat_closed`, `hook_event`, `session_meta`. (Note: `session_paused` / `session_resumed` are removed post-redesign.)
+- **Channel** — `notifications/claude/channel` JSON-RPC notification emitted by the stdio shim. Wakes Claude on `node_committed`, `chat_message_added` (user messages only), `chat_accepted`, `session_wrap`, and `node_reconsider_marked` events. Payload `seq` lets the skill detect gaps (absent on `node_reconsider_marked` — those are not on the monotonic counter).
+- **SSE event** — internal pub/sub between server and GUI/shim. Types: `session_started`, `session_list`, `session_ended`, `session_deleted`, `session_wrap`, `node_added`, `node_updated`, `node_committed`, `node_reconsider_marked`, `chat_message_added`, `chat_proposals_staged`, `chat_accepted`, `chat_closed`, `hook_event`, `session_meta`. (Note: `session_paused` / `session_resumed` are removed post-redesign.)
 - **Hook trace** — Claude Code tool-call event POSTed to `/hooks`. Attached to a node when the skill injected `_grill_node_id` / `_grill_session_id` into `tool_input`; otherwise `_unbound` bucket.
 
 ## Implicit decisions
 
 - **Implicit decision** — decision Claude made silently, recorded via `record_implicit_decision`. Surfaced in a separate lane. Tagged with `[CONTEXT]` / `[ADR]` prefixes when it's a doc-worthy moment.
 
+## Reconsider mark
+
+- **Reconsider mark (🚩)** — one-click flag per committed-decision history row, and on the active BigCard when locked (wrap-pending or redirected). Fires a `mark_reconsider` GUI action carrying `node_id` only — no reason text. Terminal-class action; bypasses the click buffer and broadcasts immediately. Excluded surfaces: implicit-decision lane, summary nodes. See ADR-0009.
+- **Mark state machine** — `unmarked → marked (yellow) → seen (red)`. Server flips `marked → seen` after the shim confirms the channel notification delivered. No proactive un-mark; once clicked, Claude **will** re-surface.
+- **Reconsider-fork** — Claude's response to a mark. Pushes a new decision node `N'` with `parent_node_id = N` (the regretted node) and `parent_branch_id = <synth reconsider-fork edge>` (a Branch appended to `N.branches` with `rationale="reconsider-fork edge"`). `N'` carries the original question text + refreshed branches + a synth **"Never mind" branch** for dismissal. `N` is never mutated; its previously-chosen branch becomes "abandoned" via existing 30%-opacity decision-map encoding. Descendants of that abandoned branch fade in the history sidebar.
+- **"Never mind" branch** — synth Branch auto-appended to every re-surfaced `N'` (label `"Never mind"`, `is_recommended: false`). Picking it dismisses the reconsider without drilling. Replaces a proactive un-mark UI.
+- **Mark queue + timing** — `Session.reconsider_queue: list[str]` holds node_ids marked but not yet re-surfaced. Claude judges ordering per-case. Hard rules: never NOW (don't interrupt the current question), earliest = next normal commit, latest = before `present_summary`. Wrap-up with non-empty queue is soft-warned via a summary-card chip, not blocked.
+- **Mark scope** — 🚩 works on any committed decision node (regular, redirected, reconsider-forked). Recursive forks allowed (`N'` can itself be marked → `N''`).
+- **Mark-wake** — `node_reconsider_marked` channel notification. Skill rule: Claude internalizes silently and ends turn — never pushes a decision node on a mark-wake. The mark is acted on during the next normal commit wake.
+
 ## Retrospective surfaces
 
 - **Decision map** — read-only pan/zoom canvas overlay on the summary card. Visualises the whole grilled session for review: design space (abandoned branches), shape (skim long sessions), and chat side-conversations (refines/redirects). Toggle from the summary card header; renders full-viewport. NOT a navigator — no click-to-jump, no popovers. Encoding does all the work. The sole sanctioned xyflow+dagre surface in the codebase, scoped to retrospective review (see ADR-0002).
   - **Map node** — every `DecisionNode` / summary node / implicit decision in the session. Implicit decisions render as small child nodes attached to their `parent_node_id`; doc-tagged ones (`decision` starts with `[ADR]` or `[CONTEXT]`) carry a 📍 marker.
   - **Map edge** — every entry in a parent node's `branches`. Edge label = branch label; classification follows the four-state matrix below.
-  - **Map encoding** — chosen branch edge: solid full-colour. Abandoned: 30% opacity gray. Chat-added (in `pending_proposals.ops.adds` history): dashed green. Chat-removed (id in `removed_branch_ids`): strikethrough red. Redirected node (`redirected === true`): dashed red border on the node itself.
+  - **Map encoding** — chosen branch edge: solid full-colour. Abandoned: 30% opacity gray. Chat-added (in `pending_proposals.ops.adds` history): dashed green. Chat-removed (id in `removed_branch_ids`): strikethrough red. Redirected node (`redirected === true`): dashed red border on the node itself. Reconsider-fork node (`N'` — landed via the synth reconsider-fork edge on its parent): 🚩 corner badge; the original chosen branch on the parent renders as abandoned (reusing the 30%-opacity rule).
 
 ## Performance tracking
 
