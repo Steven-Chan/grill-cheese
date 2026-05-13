@@ -271,7 +271,42 @@ class Store:
                     if b.id == parent_branch_id:
                         b.child_node_id = node_id
                         break
+        # reconsider-fork drain: a push with parent_node_id == a queued mark
+        # IS the act of re-surfacing that mark. Drop the queue entry, reset
+        # the parent node's flag, and broadcast so the GUI clears the red
+        # flag. See ADR-0009. Skip when implicit (record_implicit_decision
+        # uses add_node too but never resolves a reconsider).
+        drained_parent_id: Optional[str] = None
+        if (
+            not implicit
+            and parent_node_id
+            and parent_node_id in s.reconsider_queue
+        ):
+            s.reconsider_queue.remove(parent_node_id)
+            parent_node = s.nodes.get(parent_node_id)
+            if parent_node is not None:
+                parent_node.reconsider_marked = "unmarked"
+                drained_parent_id = parent_node_id
         self._persist(s)
+        if drained_parent_id is not None:
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(
+                    self.broadcast(
+                        sid,
+                        {
+                            "type": "node_reconsider_marked",
+                            "session_id": sid,
+                            "payload": {
+                                "node_id": drained_parent_id,
+                                "reconsider_marked": "unmarked",
+                                "reconsider_queue": list(s.reconsider_queue),
+                            },
+                        },
+                    )
+                )
+            except RuntimeError:
+                pass
         return node
 
     # ---- per-node action buffer (idle-debounce flush) ----

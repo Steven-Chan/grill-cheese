@@ -205,6 +205,11 @@ async def _emit_channel(session: ServerSession, event_data: dict[str, Any]) -> N
         body["generate_docs"] = payload["generate_docs"]
     if "docs_reason" in payload:
         body["docs_reason"] = payload["docs_reason"]
+    # Reconsider queue snapshot: forward so skill's piggy-back discovery
+    # path works (otherwise skill must call get_session_snapshot on every
+    # wake to check for queued marks). See ADR-0009.
+    if "pending_reconsiders" in payload:
+        body["pending_reconsiders"] = payload["pending_reconsiders"]
     meta = {
         "session_id": str(session_id),
         "node_id": str(node_id),
