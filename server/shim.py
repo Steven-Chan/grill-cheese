@@ -361,6 +361,58 @@ async def _emit_chat_accepted_channel(
     # action-buffer flush counter); /internal/telemetry/notify is keyed on seq.
 
 
+async def _emit_reconsider_marked_channel(
+    session: ServerSession, event_data: dict[str, Any]
+) -> None:
+    """Map an SSE node_reconsider_marked envelope to a channel notif.
+
+    Only emit on the "marked" transition — the "seen" transition is a
+    server-side state flip driven BY this emit's delivery confirm, so
+    re-emitting on seen would be circular. Payload shape (type=node_reconsider_marked):
+        {type, session_id, node_id}
+    No seq — not on the per-session monotonic counter (mark bypasses the
+    action-buffer flush path). Skill rule on wake: internalize silently,
+    end turn — do NOT push a decision node on this wake. See ADR-0009.
+    """
+    payload = event_data.get("payload") or {}
+    state = payload.get("reconsider_marked")
+    if state != "marked":
+        return  # ignore seen-flip echo
+    session_id = event_data.get("session_id") or ""
+    node_id = payload.get("node_id") or ""
+    body: dict[str, Any] = {
+        "type": "node_reconsider_marked",
+        "session_id": session_id,
+        "node_id": node_id,
+    }
+    meta = {
+        "session_id": str(session_id),
+        "node_id": str(node_id),
+        "kind": "node_reconsider_marked",
+    }
+    try:
+        jr = JSONRPCNotification(
+            jsonrpc="2.0",
+            method="notifications/claude/channel",
+            params={"content": json.dumps(body), "meta": meta},
+        )
+        await session.send_message(SessionMessage(message=JSONRPCMessage(jr)))
+        _log(f"emitted node_reconsider_marked channel session={session_id} node={node_id}")
+    except Exception as e:
+        _log(f"reconsider_marked channel emit err: {type(e).__name__}: {e}")
+        return
+    # Server flips marked → seen on this delivery confirm (purely visual).
+    if session_id and node_id:
+        try:
+            client = await _http()
+            await client.post(
+                "/internal/reconsider/seen",
+                json={"session_id": session_id, "node_id": node_id},
+            )
+        except Exception:
+            pass
+
+
 async def _dispatch_emit(session: ServerSession, event_name: str, data: dict[str, Any]) -> None:
     if event_name == "node_committed":
         await _emit_channel(session, data)
@@ -370,6 +422,8 @@ async def _dispatch_emit(session: ServerSession, event_name: str, data: dict[str
         await _emit_chat_message_channel(session, data)
     elif event_name == "chat_accepted":
         await _emit_chat_accepted_channel(session, data)
+    elif event_name == "node_reconsider_marked":
+        await _emit_reconsider_marked_channel(session, data)
 
 
 async def _sse_subscriber() -> None:
@@ -381,7 +435,7 @@ async def _sse_subscriber() -> None:
     """
     backoff = 1.0
     sse_path = f"/events?owner={OWNER_ID}"
-    bridged = {"node_committed", "session_wrap", "chat_message_added", "chat_accepted"}
+    bridged = {"node_committed", "session_wrap", "chat_message_added", "chat_accepted", "node_reconsider_marked"}
     while True:
         try:
             async with httpx.AsyncClient(base_url=BASE_URL, timeout=None) as c:
