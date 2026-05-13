@@ -106,9 +106,6 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
     direction: "forward" | "back";
   }>({ prev: null, curr: targetView, direction: "forward" });
 
-  // Skip the entrance animation on first BigCard mount per session
-  // (page reload, cmd+P swap). MIFB rule 13.
-  const isFirstSwapRef = useRef(true);
   const cleanupTimerRef = useRef<number | null>(null);
 
   // Derive curr key as a string so the swap effect doesn't fire on
@@ -118,9 +115,13 @@ export function BigCard({ onToast, selectedNodeId, onClearSelection }: Props) {
 
   useEffect(() => {
     if (currKey === targetKey) return;
-    if (isFirstSwapRef.current) {
-      // First mount or first computed view — land in final state instantly.
-      isFirstSwapRef.current = false;
+    // First-content-fill is silent: if the slot we're leaving is `idle`,
+    // we're populating the surface for the first time (mount-then-SSE-
+    // delivers-first-node). Snapshot-already-loaded mounts skip this
+    // branch entirely because useState init already aligns curr with
+    // targetView and the effect early-returns. Either way, the first
+    // user-driven swap animates. MIFB rule 13.
+    if (slots.curr.kind === "idle") {
       setSlots({ prev: null, curr: targetView, direction: "forward" });
       return;
     }
