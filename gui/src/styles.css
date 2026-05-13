@@ -1,3 +1,15 @@
+/* Monaspace Argon — variable woff2, weight + width + slant axes */
+@font-face {
+  font-family: "Monaspace Argon";
+  src:
+    url("https://cdn.jsdelivr.net/npm/monaspace-font@0.0.2/files/MonaspaceArgonVarVF%5Bwght,wdth,slnt%5D.woff2") format("woff2") tech("variations"),
+    url("https://cdn.jsdelivr.net/npm/monaspace-font@0.0.2/files/MonaspaceArgonVarVF%5Bwght,wdth,slnt%5D.woff2") format("woff2-variations");
+  font-weight: 100 900;
+  font-stretch: 75% 125%;
+  font-style: oblique -15deg 0deg;
+  font-display: swap;
+}
+
 :root {
   --gc-bg: #1a1612;
   --gc-bg-elev: #211c17;
@@ -10,8 +22,8 @@
   --gc-warn: #e88e5d;
   --gc-rec: #d4a554;
   --gc-impl: #b07cc7;
-  --gc-serif: "Ubuntu", "Helvetica Neue", Arial, sans-serif;
-  --gc-mono: "Ubuntu Mono", "JetBrains Mono", ui-monospace, monospace;
+  --gc-serif: "Monaspace Argon", ui-monospace, "Helvetica Neue", Arial, sans-serif;
+  --gc-mono: "Monaspace Argon", "JetBrains Mono", ui-monospace, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -25,6 +37,9 @@ html, body, #root {
   font-family: var(--gc-mono);
   font-size: 14px;
   line-height: 1.5;
+  /* calt = texture healing + ligatures; ss01-ss08 = code ligatures (==, !=, =>, ->, etc.) */
+  font-feature-settings: "calt", "liga", "ss01", "ss02", "ss03", "ss04", "ss05", "ss06", "ss07", "ss08";
+  font-variant-ligatures: contextual;
 }
 
 a { color: var(--gc-accent); text-decoration: none; }
@@ -1686,7 +1701,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   position: absolute;
   top: 6px;
   right: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--gc-mono);
   font-size: 10px;
   line-height: 1;
   padding: 2px 5px;
@@ -1766,7 +1781,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   background: rgba(132, 212, 179, 0.14);
 }
 .gc-mention-hintkey {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--gc-mono);
   font-size: 10px;
   padding: 2px 5px;
   border: 1px solid var(--gc-edge);
@@ -1838,7 +1853,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   align-items: center;
 }
 .gc-cheatsheet-keys {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--gc-mono);
   font-size: 12px;
   color: var(--gc-accent);
 }
@@ -1857,7 +1872,7 @@ code { font-family: var(--gc-mono); background: var(--gc-bg-elev); padding: 0 4p
   user-select: none;
 }
 .gc-detail-shortcut-hint kbd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--gc-mono);
   border: 1px solid var(--gc-edge);
   padding: 1px 5px;
   border-radius: 3px;
